@@ -87,7 +87,7 @@ on:
         description: 'Plugin JSON, e.g. {"shadowsocks":"y","xray":"n"}'
         required: true
         type: string
-        default: '{"shadowsocks":"y","v2ray":"n","xray":"y","trojan":"y","ssobfs":"y","smartdns":"y","vlmcsd":"y","ttyd":"y","iperf3":"n","cifs":"y","htop":"y","socat":"y","wireguard":"y"}'
+        default: '{"shadowsocks":"y","v2ray":"n","xray":"y","trojan":"y","ssobfs":"y","smartdns":"y","vlmcsd":"y","ttyd":"y","iperf3":"n","cifs":"y","htop":"y","socat":"y","wireguard":"y","natmap":"y"}'
       customization:
         description: 'Customization JSON'
         required: true
@@ -124,6 +124,7 @@ jobs:
       - uses: actions/checkout@main
         with:
           fetch-depth: 1
+          submodules: recursive
       - uses: hendrikmuhs/ccache-action@main
         with:
           key: ${{ inputs.target }}-${{ inputs.toolchain }}

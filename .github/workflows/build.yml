@@ -23,6 +23,7 @@ jobs:
       - uses: actions/checkout@main
         with:
           fetch-depth: 1
+          submodules: recursive
       - uses: hendrikmuhs/ccache-action@main
         with:
           key: ${{ matrix.target }}-${{ matrix.toolchain }}

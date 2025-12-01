@@ -12,7 +12,8 @@ local xray = {
 		loglevel = "warning"
 	},
 	-- 传入连接
-	inbound = (local_port ~= "0") and {
+	inbounds = {
+		(local_port ~= "0") and {
 		port = local_port,
 		protocol = "dokodemo-door",
 		settings = {
@@ -25,7 +26,7 @@ local xray = {
 		}
 	} or nil,
 	-- 开启 socks 代理
-	inboundDetour = (proto == "tcp" and socks_port ~= "0") and {
+	(proto == "tcp" and socks_port ~= "0") and {
 		{
 		protocol = "socks",
 		port = socks_port,
@@ -35,8 +36,9 @@ local xray = {
 			}
 		}
 	} or nil,
+	},
 	-- 传出连接
-	outbound = {
+	outbounds = {{
 		protocol = "vless",
 		settings = {
 			vnext = {
@@ -132,7 +134,6 @@ local xray = {
 	},
 
 	-- 额外传出连接
-	outboundDetour = {
 		{
 			protocol = "freedom",
 			tag = "direct",

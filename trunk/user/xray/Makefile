@@ -15,7 +15,8 @@ define Build/Compile
 	(cd $(PKG_BUILD_DIR); \
 		GOOS=linux GOARCH=mipsle CGO_ENABLED=0 \
 		go build -v -o xray \
-		-trimpath -ldflags "-s -w -buildid=" \
+		-buildvcs=false -gcflags="-l=4" -ldflags="" \
+		-trimpath -ldflags "-X github.com/xtls/xray-core/core.build=REPLACE -s -w -buildid=" \
 		./main; \
 	)
 endef

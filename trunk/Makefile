@@ -82,7 +82,7 @@ ifeq ($(CONFIG_CCACHE),y)
     export CCACHE_COMPILERCHECK := %compiler% -dumpmachine; %compiler% -dumpversion
     export CCACHE_SLOPPINESS    := pch_defines,time_macros
     CCACHE_WRAPPER_DIR          := $(CONFIG_CROSS_COMPILER_ROOT)/ccache-wrappers
-    WRAPPERS                    := $(addprefix $(CROSS_COMPILE), gcc g++ cc c++)
+    WRAPPERS                    := $(addprefix $(CROSS_COMPILE), gcc g++ cc c++ ar strip)
     $(shell mkdir -p $(CCACHE_WRAPPER_DIR); \
       for bin in $(WRAPPERS); do \
         target="$(CCACHE_WRAPPER_DIR)/$$bin"; \

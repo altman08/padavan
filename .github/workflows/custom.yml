@@ -107,7 +107,7 @@ on:
         default: true
 
 env:
-  FIRMWARE_AUTHOR: TurBoTse
+  FIRMWARE_AUTHOR: altman08
   TOOLCHAIN: ${{ inputs.toolchain }}
   TOOLCHAIN_URL: https://github.com/TurBoTse/padavan/releases/download/toolchain/${{ inputs.toolchain }}.tar.xz
   CONFIGFILE: trunk/configs/templates/${{ inputs.target }}.config

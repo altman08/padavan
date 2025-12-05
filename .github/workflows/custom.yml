@@ -87,7 +87,7 @@ on:
         description: 'Plugin JSON, e.g. {"shadowsocks":"y","xray":"n"}'
         required: true
         type: string
-        default: '{"shadowsocks":"y","v2ray":"n","xray":"y","trojan":"y","ssobfs":"y","smartdns":"y","vlmcsd":"y","ttyd":"y","iperf3":"n","cifs":"y","htop":"y","socat":"y","wireguard":"y","natmap":"y","n2n":"y","fakehttp":"y","fakesip":"y","webd":"y","neofetch":"y"}'
+        default: '{"shadowsocks":"y","v2ray":"n","xray":"y","trojan":"y","ssobfs":"y","smartdns":"y","vlmcsd":"y","ttyd":"y","iperf3":"n","cifs":"y","htop":"y","socat":"y","wireguard":"y","natmap":"y","n2n":"y","fakehttp":"y","fakesip":"y","webd":"y","neofetch":"y","tmux":"y"}'
       customization:
         description: 'Customization JSON'
         required: true
@@ -195,7 +195,7 @@ jobs:
             ARIA_WEB_CONTROL CURL SCUTCLIENT GDUT_DRCOM DOGCOM MINIEAP NJIT_CLIENT SOFTETHERVPN_SERVER SOFTETHERVPN_CLIENT 
             SOFTETHERVPN_CMD VLMCSD TTYD MSD_LITE LRZSZ HTOP NANO IPERF3 DUMP1090 RTL_SDR MTR SOCAT SRELAY MENTOHUST 
             FRPC FRPS REDSOCKS SHADOWSOCKS XRAY V2RAY TROJAN SSOBFS SINGBOX NAIVEPROXY ADBYBY DNSFORWARDER SMARTDNS 
-            ADGUARDHOME ZEROTIER ALIDDNS DDNSTO ALDRIVER SQM WIREGUARD NATMAP N2N FAKEHTTP FAKESIP WEBD NEOFETCH)
+            ADGUARDHOME ZEROTIER ALIDDNS DDNSTO ALDRIVER SQM WIREGUARD NATMAP N2N FAKEHTTP FAKESIP WEBD NEOFETCH TMUX)
           for m in "${modules[@]}"; do
             sed -i "s/CONFIG_FIRMWARE_INCLUDE_${m}=y/CONFIG_FIRMWARE_INCLUDE_${m}=n/" "$CONFIGFILE"
           done

@@ -4,7 +4,7 @@ PKG_NAME:=xray
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/XTLS/Xray-core.git
-PKG_SOURCE_VERSION:=v25.12.1
+PKG_SOURCE_VERSION:=v25.12.8
 
 include $(INCLUDE_DIR)/package.mk
 

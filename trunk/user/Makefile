@@ -103,6 +103,7 @@ dir_n =
 dir_  =
 dir_y                      			+= ralinkiappd
 dir_y						+= busybox
+dir_y						+= toybox
 dir_y						+= iptables
 dir_y						+= coremark
 ifneq ($(CONFIG_WITHOUT_KERNEL),y)

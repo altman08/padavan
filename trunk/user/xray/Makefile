@@ -13,7 +13,7 @@ endef
 
 define Build/Compile
 	(cd $(PKG_BUILD_DIR); \
-		GOOS=linux GOARCH=mipsle CGO_ENABLED=0 \
+		GOOS=linux GOARCH=mipsle CGO_ENABLED=1 CC=$(CCACHE_WRAPPER_DIR)/$(TARGET_CC_NOCACHE) \
 		go build -v -o xray \
 		-buildvcs=false -gcflags="-l=4" -ldflags="" \
 		-trimpath -ldflags "-X github.com/xtls/xray-core/core.build=REPLACE -s -w -buildid=" \

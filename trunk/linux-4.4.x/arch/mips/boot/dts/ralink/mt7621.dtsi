@@ -582,7 +582,7 @@
 	crypto: crypto@1e004000 {
 		status = "okay";
 
-		compatible = "mediatek,mtk-eip93";
+		compatible = "mediatek,mt7621-eip93", "inside-secure,safexcel-eip93ies";
 		reg = <0x1E004000 0x1000>;
 
 		interrupt-parent = <&gic>;

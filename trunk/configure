@@ -312,4 +312,17 @@ if [ "$CONFIG_FIRMWARE_INCLUDE_AUDIO" != "y" ] || [ "$CONFIG_FIRMWARE_ENABLE_USB
         func_disable_kernel_param "CONFIG_FW_LOADER"
         func_disable_kernel_param "CONFIG_SOUND"
 fi
+############################# EIP93 ###################################
+# Enable after optional VPN pruning so the hardware driver keeps its dependencies.
+# Set CONFIG_FIRMWARE_INCLUDE_EIP93=n in a product template to opt out.
+if [ "$CONFIG_SOC_MT7621" = "y" ] && [ "$CONFIG_FIRMWARE_INCLUDE_EIP93" != "n" ]; then
+        "$ROOTDIR/$CONFIG_LINUXDIR/scripts/config" --file "$kernel_tf" \
+                -e CRYPTO -e CRYPTO_HW -e CRYPTO_DEV_EIP93 \
+                -e CRYPTO_USER_API_HASH -e CRYPTO_USER_API_SKCIPHER \
+                -e CRYPTO_USER_API_AEAD -e CRYPTO_GCM -e CRYPTO_CTR \
+                -e CRYPTO_GHASH -d CRYPTO_MANAGER_DISABLE_TESTS
+else
+        "$ROOTDIR/$CONFIG_LINUXDIR/scripts/config" --file "$kernel_tf" \
+                -d CRYPTO_DEV_EIP93
+fi
 #######################################################################

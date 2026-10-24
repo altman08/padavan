@@ -1,0 +1,693 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * Copyright (C) 2019 - 2021
+ *
+ * Richard van Schagen <vschagen@icloud.com>
+ * Christian Marangi <ansuelsmth@gmail.com>
+ */
+
+#include <crypto/aead.h>
+#include <crypto/aes.h>
+#include <crypto/authenc.h>
+#include <crypto/ctr.h>
+#include <crypto/internal/aead.h>
+#include <crypto/md5.h>
+#include <crypto/null.h>
+#include <crypto/sha.h>
+
+#include "eip93-compat.h"
+
+#include <linux/crypto.h>
+#include <linux/dma-mapping.h>
+#include <linux/sizes.h>
+
+#include "eip93-aead.h"
+#include "eip93-cipher.h"
+#include "eip93-common.h"
+#include "eip93-regs.h"
+
+void eip93_aead_handle_result(struct crypto_async_request *async, int err)
+{
+	struct eip93_crypto_ctx *ctx = crypto_tfm_ctx(async->tfm);
+	struct eip93_device *eip93 = ctx->eip93;
+	struct aead_request *req = aead_request_cast(async);
+	struct eip93_cipher_reqctx *rctx = aead_request_ctx(req);
+
+	eip93_unmap_dma(eip93, rctx, req->src, req->dst, err);
+	eip93_handle_result(eip93, rctx, err ? NULL : req->iv);
+	dma_unmap_single(eip93->dev, rctx->sa_record_base, sizeof(*rctx->sa_record), DMA_TO_DEVICE);
+	kzfree(rctx->sa_record);
+
+	aead_request_complete(req, err);
+}
+
+static int eip93_aead_send_req(struct crypto_async_request *async)
+{
+	struct aead_request *req = aead_request_cast(async);
+	struct eip93_cipher_reqctx *rctx = aead_request_ctx(req);
+	int err;
+
+	err = check_valid_request(rctx);
+	if (err)
+		return err;
+
+	return eip93_send_req(async, req->iv, rctx);
+}
+
+/* Crypto aead API functions */
+static int eip93_aead_cra_init(struct crypto_tfm *tfm)
+{
+	struct eip93_crypto_ctx *ctx = crypto_tfm_ctx(tfm);
+	const char *hash, *cipher;
+	char name[CRYPTO_MAX_ALG_NAME];
+	struct eip93_alg_template *tmpl =
+		container_of(tfm->__crt_alg, struct eip93_alg_template, alg.aead.base);
+
+	crypto_aead_set_reqsize(__crypto_aead_cast(tfm), sizeof(struct eip93_cipher_reqctx));
+
+	ctx->eip93 = tmpl->eip93;
+	ctx->flags = tmpl->flags;
+	ctx->type = tmpl->type;
+	ctx->authsize = tmpl->alg.aead.maxauthsize;
+	ctx->set_assoc = true;
+
+	ctx->sa_record = kzalloc(sizeof(*ctx->sa_record), GFP_KERNEL);
+	if (!ctx->sa_record)
+		return -ENOMEM;
+
+	/* Explicit software children prevent recursion into our ordered worker. */
+	hash = IS_HASH_MD5(ctx->flags)	    ? "md5-generic"
+	       : IS_HASH_SHA1(ctx->flags)   ? "sha1-generic"
+	       : IS_HASH_SHA224(ctx->flags) ? "sha224-generic"
+					    : "sha256-generic";
+	cipher = IS_DES(ctx->flags)	  ? "cbc(des-generic)"
+		 : IS_3DES(ctx->flags)	  ? "cbc(des3_ede-generic)"
+		 : IS_RFC3686(ctx->flags) ? "rfc3686(ctr(aes-generic))"
+					  : "cbc(aes-generic)";
+	snprintf(name, sizeof(name), "authenc(hmac(%s),%s)", hash, cipher);
+	ctx->fallback = crypto_alloc_aead(name, 0, CRYPTO_ALG_ASYNC);
+	if (IS_ERR(ctx->fallback)) {
+		kzfree(ctx->sa_record);
+		return PTR_ERR(ctx->fallback);
+	}
+
+	return 0;
+}
+
+static void eip93_aead_cra_exit(struct crypto_tfm *tfm)
+{
+	struct eip93_crypto_ctx *ctx = crypto_tfm_ctx(tfm);
+
+	crypto_free_aead(ctx->fallback);
+	kzfree(ctx->sa_record);
+}
+
+static int eip93_aead_setkey(struct crypto_aead *ctfm, const u8 *key, unsigned int len)
+{
+	struct crypto_tfm *tfm = crypto_aead_tfm(ctfm);
+	struct eip93_crypto_ctx *ctx = crypto_tfm_ctx(tfm);
+	struct crypto_authenc_keys keys;
+	struct sa_record *sa_record = ctx->sa_record;
+	u32 nonce = 0;
+	int ret;
+
+	if (crypto_authenc_extractkeys(&keys, key, len))
+		return -EINVAL;
+	crypto_aead_clear_flags(ctx->fallback, CRYPTO_TFM_REQ_MASK);
+	crypto_aead_set_flags(ctx->fallback, crypto_aead_get_flags(ctfm) & CRYPTO_TFM_REQ_MASK);
+	ret = crypto_aead_setkey(ctx->fallback, key, len);
+	crypto_aead_set_flags(ctfm, crypto_aead_get_flags(ctx->fallback) & CRYPTO_TFM_RES_MASK);
+	if (ret)
+		return ret;
+
+	if (IS_RFC3686(ctx->flags)) {
+		if (keys.enckeylen < CTR_RFC3686_NONCE_SIZE)
+			return -EINVAL;
+
+		keys.enckeylen -= CTR_RFC3686_NONCE_SIZE;
+		memcpy(&nonce, keys.enckey + keys.enckeylen, CTR_RFC3686_NONCE_SIZE);
+	}
+
+	switch ((ctx->flags & EIP93_ALG_MASK)) {
+	case EIP93_ALG_DES:
+		ret = eip93_verify_des_key(tfm, keys.enckey, keys.enckeylen);
+		if (ret)
+			return ret;
+
+		break;
+	case EIP93_ALG_3DES:
+		if (keys.enckeylen != DES3_EDE_KEY_SIZE)
+			return -EINVAL;
+
+		ret = eip93_verify_des3_key(tfm, keys.enckey, keys.enckeylen);
+		if (ret)
+			return ret;
+
+		break;
+	case EIP93_ALG_AES:
+		ret = aes_check_keylen(keys.enckeylen);
+		if (ret)
+			return ret;
+
+		break;
+	}
+
+	ctx->blksize = IS_AES(ctx->flags) ? AES_BLOCK_SIZE : DES_BLOCK_SIZE;
+	/* Encryption key */
+	eip93_set_sa_record(sa_record, keys.enckeylen, ctx->flags);
+	sa_record->sa_cmd0_word &= ~EIP93_SA_CMD_OPCODE;
+	sa_record->sa_cmd0_word |=
+		FIELD_PREP(EIP93_SA_CMD_OPCODE, EIP93_SA_CMD_OPCODE_BASIC_OUT_ENC_HASH);
+	sa_record->sa_cmd0_word &= ~EIP93_SA_CMD_DIGEST_LENGTH;
+	sa_record->sa_cmd0_word |=
+		FIELD_PREP(EIP93_SA_CMD_DIGEST_LENGTH, ctx->authsize / sizeof(u32));
+
+	memcpy(sa_record->sa_key, keys.enckey, keys.enckeylen);
+	ctx->sa_nonce = nonce;
+	sa_record->sa_nonce = nonce;
+
+	/* authentication key */
+	ret = eip93_hmac_setkey(ctx->flags, keys.authkey, keys.authkeylen,
+				crypto_aead_alg(ctfm)->maxauthsize, sa_record->sa_i_digest,
+				sa_record->sa_o_digest, false);
+
+	ctx->set_assoc = true;
+
+	return ret;
+}
+
+static int eip93_aead_setauthsize(struct crypto_aead *ctfm, unsigned int authsize)
+{
+	struct crypto_tfm *tfm = crypto_aead_tfm(ctfm);
+	struct eip93_crypto_ctx *ctx = crypto_tfm_ctx(tfm);
+	int ret;
+
+	ret = crypto_aead_setauthsize(ctx->fallback, authsize);
+	if (ret)
+		return ret;
+	ctx->authsize = authsize;
+	ctx->sa_record->sa_cmd0_word &= ~EIP93_SA_CMD_DIGEST_LENGTH;
+	ctx->sa_record->sa_cmd0_word |=
+		FIELD_PREP(EIP93_SA_CMD_DIGEST_LENGTH, ctx->authsize / sizeof(u32));
+
+	return 0;
+}
+
+static int eip93_aead_fallback(struct aead_request *req, bool decrypt)
+{
+	struct eip93_crypto_ctx *ctx = crypto_tfm_ctx(req->base.tfm);
+	struct aead_request *subreq;
+	int ret;
+
+	subreq = aead_request_alloc(ctx->fallback, GFP_KERNEL);
+	if (!subreq)
+		return -ENOMEM;
+	aead_request_set_callback(subreq, CRYPTO_TFM_REQ_MAY_SLEEP, NULL, NULL);
+	aead_request_set_crypt(subreq, req->src, req->dst, req->cryptlen, req->iv);
+	aead_request_set_ad(subreq, req->assoclen);
+	ret = decrypt ? crypto_aead_decrypt(subreq) : crypto_aead_encrypt(subreq);
+	aead_request_free(subreq);
+	return ret;
+}
+
+static int eip93_aead_process(struct crypto_async_request *async)
+{
+	struct aead_request *req = aead_request_cast(async);
+	struct eip93_cipher_reqctx *rctx = aead_request_ctx(req);
+	struct eip93_crypto_ctx *ctx = crypto_tfm_ctx(req->base.tfm);
+	struct crypto_aead *aead = crypto_aead_reqtfm(req);
+	int ret;
+	u16 flags = rctx->flags;
+
+	memset(rctx, 0, sizeof(*rctx));
+	rctx->flags = flags;
+
+	if (IS_DECRYPT(rctx->flags) && req->cryptlen < ctx->authsize)
+		return -EINVAL;
+	/* Word-sized tags/offsets and bounded contiguous bounce buffers in hardware. */
+	if (!ctx->authsize || !IS_ALIGNED(ctx->authsize, 4) || !IS_ALIGNED(req->assoclen, 4) ||
+	    req->assoclen > 1020 || req->cryptlen == (IS_DECRYPT(flags) ? ctx->authsize : 0) ||
+	    req->cryptlen > SZ_64K - req->assoclen - ctx->authsize)
+		return eip93_aead_fallback(req, IS_DECRYPT(flags));
+	rctx->sa_record = kmemdup(ctx->sa_record, sizeof(*ctx->sa_record), GFP_KERNEL);
+	if (!rctx->sa_record)
+		return -ENOMEM;
+	if (IS_DECRYPT(rctx->flags)) {
+		rctx->sa_record->sa_cmd0_word |= EIP93_SA_CMD_DIRECTION_IN;
+		rctx->sa_record->sa_cmd1_word &=
+			~(EIP93_SA_CMD_COPY_PAD | EIP93_SA_CMD_COPY_DIGEST);
+	}
+	rctx->sa_record->sa_cmd1_word &= ~EIP93_SA_CMD_HASH_CRYPT_OFFSET;
+	rctx->sa_record->sa_cmd1_word |=
+		FIELD_PREP(EIP93_SA_CMD_HASH_CRYPT_OFFSET, req->assoclen / 4);
+	rctx->sa_record_base = dma_map_single(ctx->eip93->dev, rctx->sa_record,
+					      sizeof(*rctx->sa_record), DMA_TO_DEVICE);
+	if (dma_mapping_error(ctx->eip93->dev, rctx->sa_record_base)) {
+		kzfree(rctx->sa_record);
+		return -ENOMEM;
+	}
+
+	rctx->textsize = req->cryptlen;
+	rctx->blksize = ctx->blksize;
+	rctx->assoclen = req->assoclen;
+	rctx->authsize = ctx->authsize;
+	rctx->sg_src = req->src;
+	rctx->sg_dst = req->dst;
+	rctx->ivsize = crypto_aead_ivsize(aead);
+	rctx->desc_flags = EIP93_DESC_AEAD;
+
+	if (IS_DECRYPT(rctx->flags))
+		rctx->textsize -= rctx->authsize;
+
+	ret = eip93_aead_send_req(async);
+	if (ret != -EINPROGRESS) {
+		eip93_unmap_dma(ctx->eip93, rctx, req->src, req->dst, ret);
+		eip93_handle_result(ctx->eip93, rctx, NULL);
+		dma_unmap_single(ctx->eip93->dev, rctx->sa_record_base, sizeof(*rctx->sa_record),
+				 DMA_TO_DEVICE);
+		kzfree(rctx->sa_record);
+	}
+	return ret;
+}
+
+static int eip93_aead_encrypt(struct aead_request *req)
+{
+	struct eip93_crypto_ctx *ctx = crypto_tfm_ctx(req->base.tfm);
+	struct eip93_cipher_reqctx *rctx = aead_request_ctx(req);
+
+	rctx->flags = ctx->flags | EIP93_ENCRYPT;
+	return eip93_queue(&req->base, eip93_aead_process);
+}
+
+static int eip93_aead_decrypt(struct aead_request *req)
+{
+	struct eip93_crypto_ctx *ctx = crypto_tfm_ctx(req->base.tfm);
+	struct eip93_cipher_reqctx *rctx = aead_request_ctx(req);
+
+	rctx->flags = ctx->flags | EIP93_DECRYPT;
+	return eip93_queue(&req->base, eip93_aead_process);
+}
+
+/* Available authenc algorithms in this module */
+struct eip93_alg_template eip93_alg_authenc_hmac_md5_cbc_aes = {
+	.type = EIP93_ALG_TYPE_AEAD,
+	.flags = EIP93_HASH_HMAC | EIP93_HASH_MD5 | EIP93_MODE_CBC | EIP93_ALG_AES,
+	.alg.aead = {
+		.setkey = eip93_aead_setkey,
+		.encrypt = eip93_aead_encrypt,
+		.decrypt = eip93_aead_decrypt,
+		.ivsize = AES_BLOCK_SIZE,
+		.setauthsize = eip93_aead_setauthsize,
+		.maxauthsize = MD5_DIGEST_SIZE,
+		.base = {
+			.cra_name = "authenc(hmac(md5),cbc(aes))",
+			.cra_driver_name = "authenc(hmac(md5-eip93),cbc(aes-eip93))",
+			.cra_priority = EIP93_CRA_PRIORITY,
+			.cra_flags = CRYPTO_ALG_ASYNC | CRYPTO_ALG_KERN_DRIVER_ONLY,
+			.cra_blocksize = AES_BLOCK_SIZE,
+			.cra_ctxsize = sizeof(struct eip93_crypto_ctx),
+			.cra_alignmask = 0,
+			.cra_init = eip93_aead_cra_init,
+			.cra_exit = eip93_aead_cra_exit,
+			.cra_module = THIS_MODULE,
+		},
+	},
+};
+
+struct eip93_alg_template eip93_alg_authenc_hmac_sha1_cbc_aes = {
+	.type = EIP93_ALG_TYPE_AEAD,
+	.flags = EIP93_HASH_HMAC | EIP93_HASH_SHA1 | EIP93_MODE_CBC | EIP93_ALG_AES,
+	.alg.aead = {
+		.setkey = eip93_aead_setkey,
+		.encrypt = eip93_aead_encrypt,
+		.decrypt = eip93_aead_decrypt,
+		.ivsize = AES_BLOCK_SIZE,
+		.setauthsize = eip93_aead_setauthsize,
+		.maxauthsize = SHA1_DIGEST_SIZE,
+		.base = {
+			.cra_name = "authenc(hmac(sha1),cbc(aes))",
+			.cra_driver_name = "authenc(hmac(sha1-eip93),cbc(aes-eip93))",
+			.cra_priority = EIP93_CRA_PRIORITY,
+			.cra_flags = CRYPTO_ALG_ASYNC | CRYPTO_ALG_KERN_DRIVER_ONLY,
+			.cra_blocksize = AES_BLOCK_SIZE,
+			.cra_ctxsize = sizeof(struct eip93_crypto_ctx),
+			.cra_alignmask = 0,
+			.cra_init = eip93_aead_cra_init,
+			.cra_exit = eip93_aead_cra_exit,
+			.cra_module = THIS_MODULE,
+		},
+	},
+};
+
+struct eip93_alg_template eip93_alg_authenc_hmac_sha224_cbc_aes = {
+	.type = EIP93_ALG_TYPE_AEAD,
+	.flags = EIP93_HASH_HMAC | EIP93_HASH_SHA224 | EIP93_MODE_CBC | EIP93_ALG_AES,
+	.alg.aead = {
+		.setkey = eip93_aead_setkey,
+		.encrypt = eip93_aead_encrypt,
+		.decrypt = eip93_aead_decrypt,
+		.ivsize = AES_BLOCK_SIZE,
+		.setauthsize = eip93_aead_setauthsize,
+		.maxauthsize = SHA224_DIGEST_SIZE,
+		.base = {
+			.cra_name = "authenc(hmac(sha224),cbc(aes))",
+			.cra_driver_name = "authenc(hmac(sha224-eip93),cbc(aes-eip93))",
+			.cra_priority = EIP93_CRA_PRIORITY,
+			.cra_flags = CRYPTO_ALG_ASYNC | CRYPTO_ALG_KERN_DRIVER_ONLY,
+			.cra_blocksize = AES_BLOCK_SIZE,
+			.cra_ctxsize = sizeof(struct eip93_crypto_ctx),
+			.cra_alignmask = 0,
+			.cra_init = eip93_aead_cra_init,
+			.cra_exit = eip93_aead_cra_exit,
+			.cra_module = THIS_MODULE,
+		},
+	},
+};
+
+struct eip93_alg_template eip93_alg_authenc_hmac_sha256_cbc_aes = {
+	.type = EIP93_ALG_TYPE_AEAD,
+	.flags = EIP93_HASH_HMAC | EIP93_HASH_SHA256 | EIP93_MODE_CBC | EIP93_ALG_AES,
+	.alg.aead = {
+		.setkey = eip93_aead_setkey,
+		.encrypt = eip93_aead_encrypt,
+		.decrypt = eip93_aead_decrypt,
+		.ivsize = AES_BLOCK_SIZE,
+		.setauthsize = eip93_aead_setauthsize,
+		.maxauthsize = SHA256_DIGEST_SIZE,
+		.base = {
+			.cra_name = "authenc(hmac(sha256),cbc(aes))",
+			.cra_driver_name = "authenc(hmac(sha256-eip93),cbc(aes-eip93))",
+			.cra_priority = EIP93_CRA_PRIORITY,
+			.cra_flags = CRYPTO_ALG_ASYNC | CRYPTO_ALG_KERN_DRIVER_ONLY,
+			.cra_blocksize = AES_BLOCK_SIZE,
+			.cra_ctxsize = sizeof(struct eip93_crypto_ctx),
+			.cra_alignmask = 0,
+			.cra_init = eip93_aead_cra_init,
+			.cra_exit = eip93_aead_cra_exit,
+			.cra_module = THIS_MODULE,
+		},
+	},
+};
+
+struct eip93_alg_template eip93_alg_authenc_hmac_md5_rfc3686_aes = {
+	.type = EIP93_ALG_TYPE_AEAD,
+	.flags = EIP93_HASH_HMAC | EIP93_HASH_MD5 | EIP93_MODE_CTR | EIP93_MODE_RFC3686 | EIP93_ALG_AES,
+	.alg.aead = {
+		.setkey = eip93_aead_setkey,
+		.encrypt = eip93_aead_encrypt,
+		.decrypt = eip93_aead_decrypt,
+		.ivsize = CTR_RFC3686_IV_SIZE,
+		.setauthsize = eip93_aead_setauthsize,
+		.maxauthsize = MD5_DIGEST_SIZE,
+		.base = {
+			.cra_name = "authenc(hmac(md5),rfc3686(ctr(aes)))",
+			.cra_driver_name = "authenc(hmac(md5-eip93),rfc3686(ctr(aes-eip93)))",
+			.cra_priority = EIP93_CRA_PRIORITY,
+			.cra_flags = CRYPTO_ALG_ASYNC | CRYPTO_ALG_KERN_DRIVER_ONLY,
+			.cra_blocksize = 1,
+			.cra_ctxsize = sizeof(struct eip93_crypto_ctx),
+			.cra_alignmask = 0,
+			.cra_init = eip93_aead_cra_init,
+			.cra_exit = eip93_aead_cra_exit,
+			.cra_module = THIS_MODULE,
+		},
+	},
+};
+
+struct eip93_alg_template eip93_alg_authenc_hmac_sha1_rfc3686_aes = {
+	.type = EIP93_ALG_TYPE_AEAD,
+	.flags =
+	EIP93_HASH_HMAC | EIP93_HASH_SHA1 | EIP93_MODE_CTR | EIP93_MODE_RFC3686 | EIP93_ALG_AES,
+	.alg.aead = {
+		.setkey = eip93_aead_setkey,
+		.encrypt = eip93_aead_encrypt,
+		.decrypt = eip93_aead_decrypt,
+		.ivsize = CTR_RFC3686_IV_SIZE,
+		.setauthsize = eip93_aead_setauthsize,
+		.maxauthsize = SHA1_DIGEST_SIZE,
+		.base = {
+			.cra_name = "authenc(hmac(sha1),rfc3686(ctr(aes)))",
+			.cra_driver_name = "authenc(hmac(sha1-eip93),rfc3686(ctr(aes-eip93)))",
+			.cra_priority = EIP93_CRA_PRIORITY,
+			.cra_flags = CRYPTO_ALG_ASYNC | CRYPTO_ALG_KERN_DRIVER_ONLY,
+			.cra_blocksize = 1,
+			.cra_ctxsize = sizeof(struct eip93_crypto_ctx),
+			.cra_alignmask = 0,
+			.cra_init = eip93_aead_cra_init,
+			.cra_exit = eip93_aead_cra_exit,
+			.cra_module = THIS_MODULE,
+		},
+	},
+};
+
+struct eip93_alg_template eip93_alg_authenc_hmac_sha224_rfc3686_aes = {
+	.type = EIP93_ALG_TYPE_AEAD,
+	.flags =
+	EIP93_HASH_HMAC | EIP93_HASH_SHA224 | EIP93_MODE_CTR | EIP93_MODE_RFC3686 | EIP93_ALG_AES,
+	.alg.aead = {
+		.setkey = eip93_aead_setkey,
+		.encrypt = eip93_aead_encrypt,
+		.decrypt = eip93_aead_decrypt,
+		.ivsize = CTR_RFC3686_IV_SIZE,
+		.setauthsize = eip93_aead_setauthsize,
+		.maxauthsize = SHA224_DIGEST_SIZE,
+		.base = {
+			.cra_name = "authenc(hmac(sha224),rfc3686(ctr(aes)))",
+			.cra_driver_name = "authenc(hmac(sha224-eip93),rfc3686(ctr(aes-eip93)))",
+			.cra_priority = EIP93_CRA_PRIORITY,
+			.cra_flags = CRYPTO_ALG_ASYNC | CRYPTO_ALG_KERN_DRIVER_ONLY,
+			.cra_blocksize = 1,
+			.cra_ctxsize = sizeof(struct eip93_crypto_ctx),
+			.cra_alignmask = 0,
+			.cra_init = eip93_aead_cra_init,
+			.cra_exit = eip93_aead_cra_exit,
+			.cra_module = THIS_MODULE,
+		},
+	},
+};
+
+struct eip93_alg_template eip93_alg_authenc_hmac_sha256_rfc3686_aes = {
+	.type = EIP93_ALG_TYPE_AEAD,
+	.flags =
+	EIP93_HASH_HMAC | EIP93_HASH_SHA256 | EIP93_MODE_CTR | EIP93_MODE_RFC3686 | EIP93_ALG_AES,
+	.alg.aead = {
+		.setkey = eip93_aead_setkey,
+		.encrypt = eip93_aead_encrypt,
+		.decrypt = eip93_aead_decrypt,
+		.ivsize = CTR_RFC3686_IV_SIZE,
+		.setauthsize = eip93_aead_setauthsize,
+		.maxauthsize = SHA256_DIGEST_SIZE,
+		.base = {
+			.cra_name = "authenc(hmac(sha256),rfc3686(ctr(aes)))",
+			.cra_driver_name = "authenc(hmac(sha256-eip93),rfc3686(ctr(aes-eip93)))",
+			.cra_priority = EIP93_CRA_PRIORITY,
+			.cra_flags = CRYPTO_ALG_ASYNC | CRYPTO_ALG_KERN_DRIVER_ONLY,
+			.cra_blocksize = 1,
+			.cra_ctxsize = sizeof(struct eip93_crypto_ctx),
+			.cra_alignmask = 0,
+			.cra_init = eip93_aead_cra_init,
+			.cra_exit = eip93_aead_cra_exit,
+			.cra_module = THIS_MODULE,
+		},
+	},
+};
+
+struct eip93_alg_template eip93_alg_authenc_hmac_md5_cbc_des = {
+	.type = EIP93_ALG_TYPE_AEAD,
+	.flags = EIP93_HASH_HMAC | EIP93_HASH_MD5 | EIP93_MODE_CBC | EIP93_ALG_DES,
+	.alg.aead = {
+		.setkey = eip93_aead_setkey,
+		.encrypt = eip93_aead_encrypt,
+		.decrypt = eip93_aead_decrypt,
+		.ivsize = DES_BLOCK_SIZE,
+		.setauthsize = eip93_aead_setauthsize,
+		.maxauthsize = MD5_DIGEST_SIZE,
+		.base = {
+			.cra_name = "authenc(hmac(md5),cbc(des))",
+			.cra_driver_name = "authenc(hmac(md5-eip93),cbc(des-eip93))",
+			.cra_priority = EIP93_CRA_PRIORITY,
+			.cra_flags = CRYPTO_ALG_ASYNC | CRYPTO_ALG_KERN_DRIVER_ONLY,
+			.cra_blocksize = DES_BLOCK_SIZE,
+			.cra_ctxsize = sizeof(struct eip93_crypto_ctx),
+			.cra_alignmask = 0,
+			.cra_init = eip93_aead_cra_init,
+			.cra_exit = eip93_aead_cra_exit,
+			.cra_module = THIS_MODULE,
+		},
+	},
+};
+
+struct eip93_alg_template eip93_alg_authenc_hmac_sha1_cbc_des = {
+	.type = EIP93_ALG_TYPE_AEAD,
+	.flags = EIP93_HASH_HMAC | EIP93_HASH_SHA1 | EIP93_MODE_CBC | EIP93_ALG_DES,
+	.alg.aead = {
+		.setkey = eip93_aead_setkey,
+		.encrypt = eip93_aead_encrypt,
+		.decrypt = eip93_aead_decrypt,
+		.ivsize = DES_BLOCK_SIZE,
+		.setauthsize = eip93_aead_setauthsize,
+		.maxauthsize = SHA1_DIGEST_SIZE,
+		.base = {
+			.cra_name = "authenc(hmac(sha1),cbc(des))",
+			.cra_driver_name = "authenc(hmac(sha1-eip93),cbc(des-eip93))",
+			.cra_priority = EIP93_CRA_PRIORITY,
+			.cra_flags = CRYPTO_ALG_ASYNC | CRYPTO_ALG_KERN_DRIVER_ONLY,
+			.cra_blocksize = DES_BLOCK_SIZE,
+			.cra_ctxsize = sizeof(struct eip93_crypto_ctx),
+			.cra_alignmask = 0,
+			.cra_init = eip93_aead_cra_init,
+			.cra_exit = eip93_aead_cra_exit,
+			.cra_module = THIS_MODULE,
+		},
+	},
+};
+
+struct eip93_alg_template eip93_alg_authenc_hmac_sha224_cbc_des = {
+	.type = EIP93_ALG_TYPE_AEAD,
+	.flags = EIP93_HASH_HMAC | EIP93_HASH_SHA224 | EIP93_MODE_CBC | EIP93_ALG_DES,
+	.alg.aead = {
+		.setkey = eip93_aead_setkey,
+		.encrypt = eip93_aead_encrypt,
+		.decrypt = eip93_aead_decrypt,
+		.ivsize = DES_BLOCK_SIZE,
+		.setauthsize = eip93_aead_setauthsize,
+		.maxauthsize = SHA224_DIGEST_SIZE,
+		.base = {
+			.cra_name = "authenc(hmac(sha224),cbc(des))",
+			.cra_driver_name = "authenc(hmac(sha224-eip93),cbc(des-eip93))",
+			.cra_priority = EIP93_CRA_PRIORITY,
+			.cra_flags = CRYPTO_ALG_ASYNC | CRYPTO_ALG_KERN_DRIVER_ONLY,
+			.cra_blocksize = DES_BLOCK_SIZE,
+			.cra_ctxsize = sizeof(struct eip93_crypto_ctx),
+			.cra_alignmask = 0,
+			.cra_init = eip93_aead_cra_init,
+			.cra_exit = eip93_aead_cra_exit,
+			.cra_module = THIS_MODULE,
+		},
+	},
+};
+
+struct eip93_alg_template eip93_alg_authenc_hmac_sha256_cbc_des = {
+	.type = EIP93_ALG_TYPE_AEAD,
+	.flags = EIP93_HASH_HMAC | EIP93_HASH_SHA256 | EIP93_MODE_CBC | EIP93_ALG_DES,
+	.alg.aead = {
+		.setkey = eip93_aead_setkey,
+		.encrypt = eip93_aead_encrypt,
+		.decrypt = eip93_aead_decrypt,
+		.ivsize = DES_BLOCK_SIZE,
+		.setauthsize = eip93_aead_setauthsize,
+		.maxauthsize = SHA256_DIGEST_SIZE,
+		.base = {
+			.cra_name = "authenc(hmac(sha256),cbc(des))",
+			.cra_driver_name = "authenc(hmac(sha256-eip93),cbc(des-eip93))",
+			.cra_priority = EIP93_CRA_PRIORITY,
+			.cra_flags = CRYPTO_ALG_ASYNC | CRYPTO_ALG_KERN_DRIVER_ONLY,
+			.cra_blocksize = DES_BLOCK_SIZE,
+			.cra_ctxsize = sizeof(struct eip93_crypto_ctx),
+			.cra_alignmask = 0,
+			.cra_init = eip93_aead_cra_init,
+			.cra_exit = eip93_aead_cra_exit,
+			.cra_module = THIS_MODULE,
+		},
+	},
+};
+
+struct eip93_alg_template eip93_alg_authenc_hmac_md5_cbc_des3_ede = {
+	.type = EIP93_ALG_TYPE_AEAD,
+	.flags = EIP93_HASH_HMAC | EIP93_HASH_MD5 | EIP93_MODE_CBC | EIP93_ALG_3DES,
+	.alg.aead = {
+		.setkey = eip93_aead_setkey,
+		.encrypt = eip93_aead_encrypt,
+		.decrypt = eip93_aead_decrypt,
+		.ivsize = DES3_EDE_BLOCK_SIZE,
+		.setauthsize = eip93_aead_setauthsize,
+		.maxauthsize = MD5_DIGEST_SIZE,
+		.base = {
+			.cra_name = "authenc(hmac(md5),cbc(des3_ede))",
+			.cra_driver_name = "authenc(hmac(md5-eip93),cbc(des3_ede-eip93))",
+			.cra_priority = EIP93_CRA_PRIORITY,
+			.cra_flags = CRYPTO_ALG_ASYNC | CRYPTO_ALG_KERN_DRIVER_ONLY,
+			.cra_blocksize = DES3_EDE_BLOCK_SIZE,
+			.cra_ctxsize = sizeof(struct eip93_crypto_ctx),
+			.cra_alignmask = 0x0,
+			.cra_init = eip93_aead_cra_init,
+			.cra_exit = eip93_aead_cra_exit,
+			.cra_module = THIS_MODULE,
+		},
+	},
+};
+
+struct eip93_alg_template eip93_alg_authenc_hmac_sha1_cbc_des3_ede = {
+	.type = EIP93_ALG_TYPE_AEAD,
+	.flags = EIP93_HASH_HMAC | EIP93_HASH_SHA1 | EIP93_MODE_CBC | EIP93_ALG_3DES,
+	.alg.aead = {
+		.setkey = eip93_aead_setkey,
+		.encrypt = eip93_aead_encrypt,
+		.decrypt = eip93_aead_decrypt,
+		.ivsize = DES3_EDE_BLOCK_SIZE,
+		.setauthsize = eip93_aead_setauthsize,
+		.maxauthsize = SHA1_DIGEST_SIZE,
+		.base = {
+			.cra_name = "authenc(hmac(sha1),cbc(des3_ede))",
+			.cra_driver_name = "authenc(hmac(sha1-eip93),cbc(des3_ede-eip93))",
+			.cra_priority = EIP93_CRA_PRIORITY,
+			.cra_flags = CRYPTO_ALG_ASYNC | CRYPTO_ALG_KERN_DRIVER_ONLY,
+			.cra_blocksize = DES3_EDE_BLOCK_SIZE,
+			.cra_ctxsize = sizeof(struct eip93_crypto_ctx),
+			.cra_alignmask = 0x0,
+			.cra_init = eip93_aead_cra_init,
+			.cra_exit = eip93_aead_cra_exit,
+			.cra_module = THIS_MODULE,
+		},
+	},
+};
+
+struct eip93_alg_template eip93_alg_authenc_hmac_sha224_cbc_des3_ede = {
+	.type = EIP93_ALG_TYPE_AEAD,
+	.flags = EIP93_HASH_HMAC | EIP93_HASH_SHA224 | EIP93_MODE_CBC | EIP93_ALG_3DES,
+	.alg.aead = {
+		.setkey = eip93_aead_setkey,
+		.encrypt = eip93_aead_encrypt,
+		.decrypt = eip93_aead_decrypt,
+		.ivsize = DES3_EDE_BLOCK_SIZE,
+		.setauthsize = eip93_aead_setauthsize,
+		.maxauthsize = SHA224_DIGEST_SIZE,
+		.base = {
+			.cra_name = "authenc(hmac(sha224),cbc(des3_ede))",
+			.cra_driver_name = "authenc(hmac(sha224-eip93),cbc(des3_ede-eip93))",
+			.cra_priority = EIP93_CRA_PRIORITY,
+			.cra_flags = CRYPTO_ALG_ASYNC | CRYPTO_ALG_KERN_DRIVER_ONLY,
+			.cra_blocksize = DES3_EDE_BLOCK_SIZE,
+			.cra_ctxsize = sizeof(struct eip93_crypto_ctx),
+			.cra_alignmask = 0x0,
+			.cra_init = eip93_aead_cra_init,
+			.cra_exit = eip93_aead_cra_exit,
+			.cra_module = THIS_MODULE,
+		},
+	},
+};
+
+struct eip93_alg_template eip93_alg_authenc_hmac_sha256_cbc_des3_ede = {
+	.type = EIP93_ALG_TYPE_AEAD,
+	.flags = EIP93_HASH_HMAC | EIP93_HASH_SHA256 | EIP93_MODE_CBC | EIP93_ALG_3DES,
+	.alg.aead = {
+		.setkey = eip93_aead_setkey,
+		.encrypt = eip93_aead_encrypt,
+		.decrypt = eip93_aead_decrypt,
+		.ivsize = DES3_EDE_BLOCK_SIZE,
+		.setauthsize = eip93_aead_setauthsize,
+		.maxauthsize = SHA256_DIGEST_SIZE,
+		.base = {
+			.cra_name = "authenc(hmac(sha256),cbc(des3_ede))",
+			.cra_driver_name = "authenc(hmac(sha256-eip93),cbc(des3_ede-eip93))",
+			.cra_priority = EIP93_CRA_PRIORITY,
+			.cra_flags = CRYPTO_ALG_ASYNC | CRYPTO_ALG_KERN_DRIVER_ONLY,
+			.cra_blocksize = DES3_EDE_BLOCK_SIZE,
+			.cra_ctxsize = sizeof(struct eip93_crypto_ctx),
+			.cra_alignmask = 0x0,
+			.cra_init = eip93_aead_cra_init,
+			.cra_exit = eip93_aead_cra_exit,
+			.cra_module = THIS_MODULE,
+		},
+	},
+};

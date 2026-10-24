@@ -1,10 +1,11 @@
 include $(ROOTDIR)/rules.mk
 
 PKG_NAME:=xray
+PKG_VERSION:=26.10.21
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/XTLS/Xray-core.git
-PKG_SOURCE_VERSION:=v26.3.27
+PKG_SOURCE_VERSION:=v$(PKG_VERSION)
 
 include $(INCLUDE_DIR)/package.mk
 

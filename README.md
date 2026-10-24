@@ -107,7 +107,7 @@ This project is based on original rt-n56u with latest mtk 4.4.198 kernel, which 
   - install [golang](https://go.dev/doc/install) for building go programs
     ```sh
     sudo rm -rf /usr/local/go
-    curl -fsSL https://go.dev/dl/go1.20.10.linux-amd64.tar.gz | sudo tar -C /usr/local -xz
+    curl -fsSL https://go.dev/dl/go1.27.2.linux-amd64.tar.gz | sudo tar -C /usr/local -xz
     echo "export PATH=\$PATH:/usr/local/go/bin" | sudo tee /etc/profile.d/go.sh
     source /etc/profile.d/go.sh
     go version

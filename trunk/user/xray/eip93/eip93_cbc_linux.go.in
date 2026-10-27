@@ -1,0 +1,252 @@
+// Copyright 2026 The PonWrt Authors.
+// SPDX-License-Identifier: BSD-3-Clause
+//go:build linux && ((mipsle && !purego) || eip93test)
+
+package aes
+
+import (
+	"bytes"
+	"crypto/internal/fips140"
+	"encoding/binary"
+	"io"
+	"os"
+	"runtime"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"unsafe"
+)
+
+const eip93CBCSOL = 279
+const eip93CBCMin = 4096
+const eip93CBCMax = 32768
+const eip93CBCMaxSockets = 32
+const eip93CBCAlgorithm = "cbc(aes-eip93)"
+
+var eip93CBCDetected sync.Once
+var eip93CBCAllowed bool
+var eip93CBCSockets atomic.Int32
+var eip93CBCNotice sync.Once
+
+func eip93CBCCompatible(data []byte) bool {
+	if len(data) == 0 || data[len(data)-1] != 0 {
+		return false
+	}
+	for _, s := range bytes.Split(data, []byte{0}) {
+		if string(s) == "mediatek,mt7621-soc" {
+			return true
+		}
+	}
+	return false
+}
+
+func eip93CBCEnabled() bool {
+	eip93CBCDetected.Do(func() {
+		if fips140.Enabled || runtime.GOARCH != "mipsle" || os.Getenv("XRAY_EIP93") == "off" {
+			return
+		}
+		for _, path := range []string{"/sys/firmware/devicetree/base/compatible", "/proc/device-tree/compatible"} {
+			if b, err := os.ReadFile(path); err == nil {
+				eip93CBCAllowed = eip93CBCCompatible(b)
+				return
+			}
+		}
+	})
+	return eip93CBCAllowed
+}
+
+// CBC modes, including their IVs, are not safe for concurrent use.
+// Each mode owns an operation socket; CBC and GCM have separate socket limits.
+type eip93CBCState struct {
+	key      [32]byte
+	keyLen   int
+	fd       int
+	disabled bool
+	output   []byte
+}
+
+func newEIP93CBCState(b *Block) *eip93CBCState {
+	if !eip93CBCEnabled() {
+		return nil
+	}
+	// The generic MIPS schedule starts with the original big-endian key.
+	// Never interpret a schedule generated for CPU AES instructions.
+	schedule := EncryptionKeySchedule(b)
+	keyLen := (len(schedule)/4 - 7) * 4
+	if keyLen != 16 && keyLen != 24 && keyLen != 32 {
+		return nil
+	}
+	s := &eip93CBCState{keyLen: keyLen, fd: -1}
+	for i := 0; i < keyLen/4; i++ {
+		binary.BigEndian.PutUint32(s.key[i*4:], schedule[i])
+	}
+	runtime.SetFinalizer(s, func(s *eip93CBCState) { s.close() })
+	return s
+}
+
+func (s *eip93CBCState) close() {
+	if s.fd >= 0 {
+		syscall.Close(s.fd)
+		s.fd = -1
+		eip93CBCSockets.Add(-1)
+	}
+	clear(s.key[:])
+	clear(s.output)
+}
+
+func eip93CBCCmsg(kind int32, data []byte) []byte {
+	b := make([]byte, syscall.CmsgSpace(len(data)))
+	h := (*syscall.Cmsghdr)(unsafe.Pointer(&b[0]))
+	h.Level = eip93CBCSOL
+	h.Type = kind
+	h.SetLen(syscall.CmsgLen(len(data)))
+	copy(b[syscall.CmsgLen(0):], data)
+	return b
+}
+
+func eip93CBCU32(v uint32) []byte {
+	b := make([]byte, 4)
+	binary.LittleEndian.PutUint32(b, v)
+	return b
+}
+
+func (s *eip93CBCState) connect() error { return s.connectTo(eip93CBCAlgorithm) }
+
+// Production always binds the explicit EIP93 driver; tests use software CBC.
+func (s *eip93CBCState) connectTo(algorithm string) error {
+	if eip93CBCSockets.Add(1) > eip93CBCMaxSockets {
+		eip93CBCSockets.Add(-1)
+		return syscall.EMFILE
+	}
+	success := false
+	defer func() {
+		if !success {
+			eip93CBCSockets.Add(-1)
+		}
+	}()
+	fd, err := syscall.Socket(38, syscall.SOCK_SEQPACKET|syscall.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	defer syscall.Close(fd)
+	var sa [88]byte
+	binary.LittleEndian.PutUint16(sa[:], 38)
+	copy(sa[2:16], "skcipher")
+	copy(sa[24:], algorithm)
+	_, _, errno := syscall.Syscall(syscall.SYS_BIND, uintptr(fd), uintptr(unsafe.Pointer(&sa[0])), uintptr(len(sa)))
+	runtime.KeepAlive(sa)
+	if errno != 0 {
+		return errno
+	}
+	_, _, errno = syscall.Syscall6(syscall.SYS_SETSOCKOPT, uintptr(fd), eip93CBCSOL, 1, uintptr(unsafe.Pointer(&s.key[0])), uintptr(s.keyLen), 0)
+	runtime.KeepAlive(s)
+	if errno != 0 {
+		return errno
+	}
+	op, _, errno := syscall.Syscall6(syscall.SYS_ACCEPT4, uintptr(fd), 0, 0, syscall.SOCK_CLOEXEC, 0, 0)
+	if errno != 0 {
+		return errno
+	}
+	for _, option := range []int{syscall.SO_RCVTIMEO, syscall.SO_SNDTIMEO} {
+		if err = syscall.SetsockoptTimeval(int(op), syscall.SOL_SOCKET, option, &syscall.Timeval{Sec: 1}); err != nil {
+			syscall.Close(int(op))
+			return err
+		}
+	}
+	s.fd = int(op)
+	success = true
+	clear(s.key[:])
+	return nil
+}
+
+// Keep output private until the entire request succeeds, so software fallback
+// still sees the original input and IV, even for in-place decryption.
+func (s *eip93CBCState) exchange(iv *[BlockSize]byte, src []byte, decrypt bool) ([]byte, error) {
+	if cap(s.output) < len(src) {
+		s.output = make([]byte, len(src))
+	} else {
+		s.output = s.output[:len(src)]
+	}
+	op := uint32(1)
+	if decrypt {
+		op = 0
+	}
+	ctl := eip93CBCCmsg(3, eip93CBCU32(op))
+	ctl = append(ctl, eip93CBCCmsg(2, append(eip93CBCU32(BlockSize), iv[:]...))...)
+	n, err := syscall.SendmsgN(s.fd, src, ctl, nil, 0)
+	if err != nil {
+		return nil, err
+	}
+	if n != len(src) {
+		return nil, syscall.EIO
+	}
+	n, err = syscall.Read(s.fd, s.output)
+	if err != nil {
+		return nil, err
+	}
+	if n != len(src) {
+		return nil, syscall.EIO
+	}
+	return s.output, nil
+}
+
+func (s *eip93CBCState) selftest(b *Block, decrypt bool) bool {
+	defer func() { clear(s.output) }()
+	var iv [BlockSize]byte
+	f, err := os.Open("/dev/urandom")
+	if err != nil {
+		return false
+	}
+	_, err = io.ReadFull(f, iv[:])
+	f.Close()
+	if err != nil {
+		return false
+	}
+	// Verify the same request size as the smallest application offload.
+	plain := make([]byte, eip93CBCMin)
+	for i := range plain {
+		plain[i] = byte(i * 7)
+	}
+	expected := make([]byte, len(plain))
+	civ := iv
+	cryptBlocksEncGeneric(b, &civ, expected, plain)
+	// Keep each transform in its CBC mode's direction, including selftests.
+	// EIP93's decrypt path latches the SA direction bit; an encrypt operation
+	// on that same transform would not clear it on affected kernel drivers.
+	input, want := plain, expected
+	if decrypt {
+		input, want = expected, plain
+	}
+	got, err := s.exchange(&iv, input, decrypt)
+	return err == nil && bytes.Equal(got, want)
+}
+
+func (s *eip93CBCState) crypt(b *Block, iv *[BlockSize]byte, dst, src []byte, decrypt bool) bool {
+	if len(src) < eip93CBCMin || len(src) > eip93CBCMax || len(src)%BlockSize != 0 || s.disabled {
+		return false
+	}
+	defer runtime.KeepAlive(s)
+	defer func() { clear(s.output) }()
+	if s.fd < 0 {
+		if s.connect() != nil || !s.selftest(b, decrypt) {
+			s.close()
+			s.disabled = true
+			return false
+		}
+		eip93CBCNotice.Do(func() { println("Xray EIP93: MT7621 AES-CBC backend enabled (AF_ALG)") })
+	}
+	result, err := s.exchange(iv, src, decrypt)
+	if err != nil {
+		s.close()
+		s.disabled = true
+		return false
+	}
+	// Save the last ciphertext block before overwriting in-place input.
+	nextIV := result[len(result)-BlockSize:]
+	if decrypt {
+		nextIV = src[len(src)-BlockSize:]
+	}
+	copy(iv[:], nextIV)
+	copy(dst, result)
+	return true
+}

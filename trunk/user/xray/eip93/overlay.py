@@ -47,8 +47,24 @@ def main():
          "// EncryptionKeySchedule exposes the same internal helper as aes_asm.go.\n"
          "func EncryptionKeySchedule(c *Block) []uint32 { return c.enc[:c.roundKeysSize()] }"),
     ])
+    change("cbc.go", [
+        ("type CBCEncrypter struct {\n", "type CBCEncrypter struct {\n\teip93 *eip93CBCState\n"),
+        ("type CBCDecrypter struct {\n", "type CBCDecrypter struct {\n\teip93 *eip93CBCState\n"),
+        ("return &CBCEncrypter{b: *b, iv: iv}",
+         "return &CBCEncrypter{b: *b, iv: iv, eip93: newEIP93CBCState(b)}"),
+        ("return &CBCDecrypter{b: *b, iv: iv}",
+         "return &CBCDecrypter{b: *b, iv: iv, eip93: newEIP93CBCState(b)}"),
+        ("\tcryptBlocksEnc(&c.b, &c.iv, dst, src)",
+         "\tif c.eip93 != nil && c.eip93.crypt(&c.b, &c.iv, dst, src, false) { return }\n"
+         "\tcryptBlocksEnc(&c.b, &c.iv, dst, src)"),
+        ("\tcryptBlocksDec(&c.b, &c.iv, dst, src)",
+         "\tif c.eip93 != nil && c.eip93.crypt(&c.b, &c.iv, dst, src, true) { return }\n"
+         "\tcryptBlocksDec(&c.b, &c.iv, dst, src)"),
+    ])
     for name in ("eip93_linux.go", "eip93_stub.go", "eip93_linux_test.go"):
         files["gcm/" + name] = (Path(__file__).parent / (name + ".in")).read_text()
+    for name in ("eip93_cbc_linux.go", "eip93_cbc_stub.go", "eip93_cbc_linux_test.go"):
+        files[name] = (Path(__file__).parent / (name + ".in")).read_text()
     out.mkdir(parents=True, exist_ok=True)
     replacements = {}
     for name, text in files.items():

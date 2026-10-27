@@ -1,0 +1,245 @@
+// Copyright 2026 The PonWrt Authors.
+// SPDX-License-Identifier: BSD-3-Clause
+//go:build linux && ((mipsle && !purego) || eip93test)
+
+package aes
+
+import (
+	"bytes"
+	"encoding/binary"
+	"fmt"
+	"syscall"
+	"testing"
+)
+
+func TestEIP93CBCDTGate(t *testing.T) {
+	for _, tc := range []struct {
+		dt   string
+		want bool
+	}{
+		{"vendor,router\x00mediatek,mt7621-soc\x00", true},
+		{"mediatek,mt7621-soc\x00", true},
+		{"mediatek,mt7621-soc", false}, {"", false},
+		{"mediatek,mt7621\x00", false}, {"mediatek,mt7621-soc-extra\x00", false},
+		{"airoha,an7581\x00", false},
+	} {
+		if eip93CBCCompatible([]byte(tc.dt)) != tc.want {
+			t.Fatalf("gate %q", tc.dt)
+		}
+	}
+}
+
+func TestEIP93CBCHardware(t *testing.T) {
+	if !eip93CBCEnabled() {
+		t.Skip("requires MT7621 with EIP93 CBC backend enabled")
+	}
+	testEIP93CBCStream(t, false)
+}
+
+// Use -tags=purego,eip93test so key recovery uses the generic AES schedule.
+// The production backend always binds cbc(aes-eip93).
+func TestEIP93CBCAFALGSoftware(t *testing.T) {
+	testEIP93CBCStream(t, true)
+}
+
+func testEIP93CBCSoftwareState(t *testing.T, b *Block, key []byte, decrypt bool) *eip93CBCState {
+	t.Helper()
+	s := &eip93CBCState{fd: -1, keyLen: len(key)}
+	t.Cleanup(s.close)
+	schedule := EncryptionKeySchedule(b)
+	if got := (len(schedule)/4 - 7) * 4; got != len(key) {
+		t.Fatal("unexpected generic AES schedule length", got)
+	}
+	for i := 0; i < len(key)/4; i++ {
+		binary.BigEndian.PutUint32(s.key[i*4:], schedule[i])
+	}
+	if !bytes.Equal(s.key[:len(key)], key) {
+		t.Fatal("generic AES key recovery failed")
+	}
+	if err := s.connectTo("cbc(aes-generic)"); err != nil {
+		t.Fatal(err)
+	}
+	if s.key != [32]byte{} || !s.selftest(b, decrypt) {
+		t.Fatal("AF_ALG CBC selftest failed or key retained")
+	}
+	wrong, _ := New(bytes.Repeat([]byte{0xff}, len(key)))
+	if s.selftest(wrong, decrypt) {
+		t.Fatal("selftest accepted a mismatched key")
+	}
+	return s
+}
+
+func testEIP93CBCStream(t *testing.T, software bool) {
+	for _, keyLen := range []int{16, 24, 32} {
+		t.Run(fmt.Sprint(keyLen), func(t *testing.T) {
+			key := make([]byte, keyLen)
+			for i := range key {
+				key[i] = byte(i + 1)
+			}
+			b, err := New(key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var iv [BlockSize]byte
+			for i := range iv {
+				iv[i] = byte(i * 11)
+			}
+			enc, dec := NewCBCEncrypter(b, iv), NewCBCDecrypter(b, iv)
+			if software {
+				enc.eip93 = testEIP93CBCSoftwareState(t, b, key, false)
+				dec.eip93 = testEIP93CBCSoftwareState(t, b, key, true)
+			}
+			if enc.eip93 == nil || dec.eip93 == nil {
+				t.Fatal("CBC backend not selected")
+			}
+			defer enc.eip93.close()
+			defer dec.eip93.close()
+			wantIV := iv
+			// A single stream crosses software/hardware boundaries repeatedly.
+			// Repeat it in-place and after SetIV, as used by TLS 1.2.
+			for pass := 0; pass < 2; pass++ {
+				for _, n := range []int{0, 16, 4080, 4096, 4112, 16384, 16400, 32768, 32784, 16, 8192} {
+					plain := make([]byte, n)
+					for i := range plain {
+						plain[i] = byte(i*7 + pass)
+					}
+					want := make([]byte, n)
+					if n != 0 {
+						cryptBlocksEncGeneric(b, &wantIV, want, plain)
+					}
+					buf := make([]byte, n+BlockSize)
+					for i := n; i < len(buf); i++ {
+						buf[i] = 0xa5
+					}
+					input := bytes.Clone(plain)
+					if pass == 1 {
+						copy(buf, plain)
+						input = buf[:n]
+					}
+					hadSocket := enc.eip93.fd >= 0
+					enc.CryptBlocks(buf, input)
+					if !hadSocket && n < eip93CBCMin && enc.eip93.fd >= 0 {
+						t.Fatal("small request opened a hardware socket")
+					}
+					if !bytes.Equal(buf[:n], want) || enc.iv != wantIV {
+						t.Fatalf("encrypt/IV n=%d pass=%d", n, pass)
+					}
+					if pass == 0 && !bytes.Equal(input, plain) {
+						t.Fatal("encryption modified source")
+					}
+					input = bytes.Clone(buf[:n])
+					if pass == 1 {
+						input = buf[:n]
+					}
+					dec.CryptBlocks(buf, input)
+					if !bytes.Equal(buf[:n], plain) || dec.iv != wantIV {
+						t.Fatalf("decrypt/IV n=%d pass=%d", n, pass)
+					}
+					if pass == 0 && !bytes.Equal(input, want) {
+						t.Fatal("decryption modified source")
+					}
+					if !bytes.Equal(buf[n:], bytes.Repeat([]byte{0xa5}, BlockSize)) {
+						t.Fatal("destination tail overwritten")
+					}
+					if n >= eip93CBCMin && n <= eip93CBCMax {
+						if enc.eip93.fd < 0 || dec.eip93.fd < 0 || enc.eip93.disabled || dec.eip93.disabled {
+							t.Fatal("hardware failed or fell back")
+						}
+					}
+					if !bytes.Equal(enc.eip93.output, make([]byte, len(enc.eip93.output))) ||
+						!bytes.Equal(dec.eip93.output, make([]byte, len(dec.eip93.output))) {
+						t.Fatal("plaintext scratch buffers retained after operation")
+					}
+				}
+				reset := iv
+				enc.SetIV(reset[:])
+				dec.SetIV(reset[:])
+				reset[0] ^= 0xff
+				if enc.iv != iv || dec.iv != iv {
+					t.Fatal("SetIV did not copy IV")
+				}
+				wantIV = iv
+			}
+			// An fd failure must fall back without corrupting in-place input or
+			// advancing the IV before software has processed the request.
+			syscall.Close(enc.eip93.fd)
+			syscall.Close(dec.eip93.fd)
+			// Prevent accidental descriptor reuse before the fallback checks.
+			enc.eip93.fd = 1 << 30
+			dec.eip93.fd = 1 << 30
+			plain := bytes.Repeat([]byte{0x37}, 8192)
+			want := make([]byte, len(plain))
+			cryptBlocksEncGeneric(b, &wantIV, want, plain)
+			buf := bytes.Clone(plain)
+			enc.CryptBlocks(buf, buf)
+			if !bytes.Equal(buf, want) || enc.iv != wantIV || !enc.eip93.disabled {
+				t.Fatal("closed-fd encrypt fallback")
+			}
+			dec.CryptBlocks(buf, buf)
+			if !bytes.Equal(buf, plain) || dec.iv != wantIV || !dec.eip93.disabled {
+				t.Fatal("closed-fd decrypt fallback")
+			}
+			if !bytes.Equal(enc.eip93.output, make([]byte, len(enc.eip93.output))) ||
+				!bytes.Equal(dec.eip93.output, make([]byte, len(dec.eip93.output))) {
+				t.Fatal("plaintext scratch buffers retained")
+			}
+		})
+	}
+	if n := eip93CBCSockets.Load(); n != 0 {
+		t.Fatalf("CBC socket reservations leaked: %d", n)
+	}
+}
+
+func TestEIP93CBCSelftestFailure(t *testing.T) {
+	if !eip93CBCEnabled() {
+		t.Skip("requires MT7621 with EIP93 CBC backend enabled")
+	}
+	b, _ := New(make([]byte, 32))
+	c := NewCBCEncrypter(b, [BlockSize]byte{})
+	defer c.eip93.close()
+	// The socket gets a different key from the software oracle. Per-key
+	// verification must reject it before it can produce application output.
+	c.eip93.key[0] ^= 1
+	plain := bytes.Repeat([]byte{0x19}, eip93CBCMin)
+	want := make([]byte, len(plain))
+	iv := c.iv
+	cryptBlocksEncGeneric(b, &iv, want, plain)
+	c.CryptBlocks(plain, plain)
+	if !bytes.Equal(plain, want) || c.iv != iv || !c.eip93.disabled ||
+		c.eip93.fd != -1 || eip93CBCSockets.Load() != 0 || c.eip93.key != [32]byte{} {
+		t.Fatal("selftest failure did not safely disable hardware")
+	}
+}
+
+func TestEIP93CBCSocketLimit(t *testing.T) {
+	b, _ := New(make([]byte, 16))
+	c := NewCBCEncrypter(b, [BlockSize]byte{})
+	if c.eip93 == nil {
+		c.eip93 = &eip93CBCState{keyLen: 16, fd: -1}
+	}
+	defer c.eip93.close()
+	// Reserve capacity without creating real sockets.
+	eip93CBCSockets.Add(eip93CBCMaxSockets)
+	defer eip93CBCSockets.Add(-eip93CBCMaxSockets)
+	plain := make([]byte, eip93CBCMin)
+	want := make([]byte, len(plain))
+	iv := c.iv
+	cryptBlocksEncGeneric(b, &iv, want, plain)
+	c.CryptBlocks(plain, plain)
+	if !bytes.Equal(plain, want) || c.iv != iv || !c.eip93.disabled ||
+		eip93CBCSockets.Load() != eip93CBCMaxSockets {
+		t.Fatal("socket-limit fallback or reservation accounting")
+	}
+}
+
+func TestEIP93CBCBindFailure(t *testing.T) {
+	s := &eip93CBCState{keyLen: 16, fd: -1}
+	defer s.close()
+	before := eip93CBCSockets.Load()
+	if err := s.connectTo("cbc(padavan-nonexistent)"); err == nil {
+		t.Fatal("invalid algorithm accepted")
+	}
+	if s.fd != -1 || eip93CBCSockets.Load() != before {
+		t.Fatal("failed bind leaked a socket reservation")
+	}
+}

@@ -19,7 +19,7 @@ class OverlayTest(unittest.TestCase):
         root = Path(subprocess.check_output(
             [os.environ.get("GO", "go"), "env", "GOROOT"], universal_newlines=True).strip())
         self.source = self.base / "goroot/src/crypto/internal/fips140/aes"
-        for name in ("aes_noasm.go", "gcm/gcm.go", "gcm/gcm_noasm.go"):
+        for name in ("aes_noasm.go", "cbc.go", "gcm/gcm.go", "gcm/gcm_noasm.go"):
             dst = self.source / name
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(root / "src/crypto/internal/fips140/aes" / name, dst)
@@ -62,6 +62,12 @@ class OverlayTest(unittest.TestCase):
     def test_ambiguous_source(self):
         path = self.source / "gcm/gcm.go"
         path.write_text(path.read_text() + "\tgcmPlatformData\n")
+        self.assertNotEqual(self.generate().returncode, 0)
+        self.assertFalse((self.out / "overlay.json").exists())
+
+    def test_changed_cbc_source(self):
+        path = self.source / "cbc.go"
+        path.write_text(path.read_text().replace("\tcryptBlocksDec(&c.b, &c.iv, dst, src)", "\tchangedCBC()"))
         self.assertNotEqual(self.generate().returncode, 0)
         self.assertFalse((self.out / "overlay.json").exists())
 

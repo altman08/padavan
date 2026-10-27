@@ -1,0 +1,12 @@
+// Copyright 2026 The PonWrt Authors.
+// SPDX-License-Identifier: BSD-3-Clause
+//go:build !linux || (!mipsle && !eip93test) || (purego && !eip93test)
+
+package aes
+
+type eip93CBCState struct{}
+
+func newEIP93CBCState(b *Block) *eip93CBCState { return nil }
+func (*eip93CBCState) crypt(b *Block, iv *[BlockSize]byte, dst, src []byte, decrypt bool) bool {
+	return false
+}

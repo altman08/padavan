@@ -1,12 +1,13 @@
 include $(ROOTDIR)/rules.mk
 
 PKG_NAME:=rtp2httpd
+PKG_VERSION:=3.16.0
 
-PKG_SOURCE_PROTO:=git
-PKG_SOURCE_URL:=https://github.com/stackia/rtp2httpd.git
-PKG_SOURCE_VERSION:=v3.11.0
+PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
+PKG_SOURCE_URL:=https://codeload.github.com/stackia/rtp2httpd/tar.gz/v$(PKG_VERSION)?
+PKG_HASH:=83ff812c5b454cf70057bd2b714c891c8650260d4092d6b86629e451fda57d26
 
-export RELEASE_VERSION=$(PKG_SOURCE_VERSION)
+export RELEASE_VERSION=$(PKG_VERSION)
 
 CMAKE_OPTIONS += -DENABLE_AGGRESSIVE_OPT=ON
 

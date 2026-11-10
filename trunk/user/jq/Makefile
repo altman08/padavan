@@ -1,20 +1,14 @@
 include $(ROOTDIR)/rules.mk
 
 PKG_NAME:=jq
+PKG_VERSION:=1.8.2
 
-PKG_SOURCE_PROTO:=git
-PKG_SOURCE_URL:=https://github.com/jqlang/jq.git
-PKG_SOURCE_VERSION:=jq-1.8.1
+PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
+PKG_SOURCE_URL:=https://github.com/jqlang/jq/releases/download/$(PKG_NAME)-$(PKG_VERSION)/
+PKG_HASH:=71b8d6e8f5fe81f6c6d0d110e3892251f6ce76ed095abd315e26e6e1193af3af
 
 include $(INCLUDE_DIR)/package.mk
 
-define JqPreConfigure
-	(cd $(PKG_BUILD_DIR); \
-	autoreconf -i; \
-	)
-endef
-
-Hooks/Configure/Pre += JqPreConfigure
 CONFIGURE_ARGS += --with-oniguruma=builtin
 
 $(eval $(call BuildPackage,jq))

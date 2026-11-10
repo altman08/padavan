@@ -1,11 +1,12 @@
 include $(ROOTDIR)/rules.mk
 
 PKG_NAME:=ncurses
-PKG_VERSION:=6.6
+PKG_VERSION:=6.6.20260801
 
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
-PKG_SOURCE_URL:=@GNU/$(PKG_NAME)
-PKG_HASH:=355b4cbbed880b0381a04c46617b7656e362585d52e9cf84a67e2009b749ff11
+PKG_SOURCE_PROTO:=git
+PKG_SOURCE_URL:=https://github.com/ThomasDickey/ncurses-snapshots.git
+PKG_SOURCE_VERSION:=v$(subst .,_,$(PKG_VERSION))
+PKG_MIRROR_HASH:=0b2ecc647ad654286153880aa843e886d5f57f0ed9993acd258d091484a71686
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -24,6 +25,10 @@ CONFIGURE_ARGS += \
 	--without-profile \
 	--enable-overwrite \
 	--enable-pc-files
+
+define Build/Install
+	$(call Build/Install/Default,install.libs)
+endef
 
 $(eval $(call BuildPackage,ncurses))
 

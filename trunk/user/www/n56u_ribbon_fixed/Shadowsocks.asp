@@ -224,6 +224,7 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 			showhide_div('row_v2_mux', 0);
 			showhide_div('row_v2_net', 0);
 			showhide_div('row_v2_security', 0);
+			showhide_div('row_v2_vless_encryption', 0);
 			showhide_div('row_v2_tls', 0);
 			showhide_div('row_v2_flow', 0);
 			showhide_div('row_v2_type_tcp', 0);
@@ -241,6 +242,7 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 			showhide_div('row_v2_httpupgrade_path', 0);
 			showhide_div('row_v2_splithttp_host', 0);
 			showhide_div('row_v2_splithttp_path', 0);
+			showhide_div('row_v2_splithttp_mode', 0);
 			var b = document.form.ssp_type.value;
 			if (b == "ss") {
 				showhide_div('row_ss_password', 1);
@@ -263,7 +265,8 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 				switch_v2_type();
 				showhide_div('row_v2_aid', 1);
 				showhide_div('row_v2_vid', 1);
-				showhide_div('row_v2_security', 1);
+				showhide_div('row_v2_security', b == 'v2ray');
+				showhide_div('row_v2_vless_encryption', b == 'xray');
 				showhide_div('row_v2_net', 1);
 				showhide_div('row_v2_type', 1);
 				showhide_div('row_v2_tls', 1);
@@ -276,6 +279,17 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 				showhide_div('row_s5_username', 1);
 				showhide_div('row_s5_password', 1);
 			}
+			switch_xray_security();
+		}
+		function switch_xray_security() {
+			var xray = document.getElementById('ssp_type').value == 'xray';
+			var tls = document.getElementById('v2_tls').value;
+			showhide_div('row_v2_fingerprint', xray && tls != '0');
+			showhide_div('row_v2_cert_pin', xray && tls == '1');
+			showhide_div('row_v2_reality_public_key', xray && tls == '2');
+			showhide_div('row_v2_reality_short_id', xray && tls == '2');
+			showhide_div('row_v2_reality_spider_x', xray && tls == '2');
+			if (xray) showhide_div('row_ssp_insecure', 0);
 		}
 		function switch_v2_type() {
 			showhide_div('row_quic_header', 0);
@@ -302,6 +316,12 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 			showhide_div('row_v2_httpupgrade_path', 0);
 			showhide_div('row_v2_splithttp_host', 0);
 			showhide_div('row_v2_splithttp_path', 0);
+			showhide_div('row_v2_splithttp_mode', 0);
+			var xray = document.getElementById('ssp_type').value == 'xray';
+			var options = document.getElementById('v2_transport').options;
+			for (var i = 0; i < options.length; i++) {
+				options[i].disabled = xray && (options[i].value == 'h2' || options[i].value == 'quic');
+			}
 			var b = document.form.v2_transport.value;
 			if (b == "tcp") {
 				showhide_div('row_v2_type', 1);
@@ -336,6 +356,7 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 			}else if (b == "splithttp") {
 				showhide_div('row_v2_splithttp_host', 1);
 				showhide_div('row_v2_splithttp_path', 1);
+				showhide_div('row_v2_splithttp_mode', xray);
 			}
 		}
 		function switch_dns() {
@@ -732,6 +753,7 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 			document.getElementById("v2_mux").value = 0;
 			document.getElementById("v2_mux").checked = false;
 			document.getElementById("v2_security").value = 'none';
+			document.getElementById("v2_vless_encryption").value = 'none';
 			document.getElementById("v2_vmess_id").value = '';
 			document.getElementById("v2_alter_id").value = '';
 			document.getElementById("v2_transport").value = 'tcp';
@@ -768,6 +790,13 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 			//v2 splithttp
 			document.getElementById("v2_splithttp_host").value = '';
 			document.getElementById("v2_splithttp_path").value = '';
+
+			document.getElementById("v2_fingerprint").value = 'chrome';
+			document.getElementById("v2_reality_public_key").value = '';
+			document.getElementById("v2_reality_short_id").value = '';
+			document.getElementById("v2_reality_spider_x").value = '/';
+			document.getElementById("v2_pinned_peer_cert_sha256").value = '';
+			document.getElementById("v2_splithttp_mode").value = 'auto';
 			//sock5
 			document.getElementById("s5_password").value = '';
 			document.getElementById("s5_username").value = '';
@@ -796,11 +825,14 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 				document.getElementById("ss_obfs_param").value = getProperty(ss, 'obfs_param', '');
 			} else if (type == "v2ray" || type == "xray") {
 				var transport = getProperty(ss, 'transport', 'tcp');
+				if (transport == 'raw') transport = 'tcp';
+				if (transport == 'xhttp') transport = 'splithttp';
 				document.getElementById("ssp_insecure").value = getProperty(ss, 'insecure', 0);
 				document.getElementById("ssp_insecure").checked = document.getElementById("ssp_insecure").value != 0;
 				document.getElementById("v2_mux").value = getProperty(ss, 'mux', 0);
 				document.getElementById("v2_mux").checked = document.getElementById("v2_mux").value != 0;
 				document.getElementById("v2_security").value = getProperty(ss, 'security', 'auto');
+				document.getElementById("v2_vless_encryption").value = getProperty(ss, 'security', 'none');
 				document.getElementById("v2_vmess_id").value = getProperty(ss, 'vmess_id', '');
 				document.getElementById("v2_alter_id").value = getProperty(ss, 'alter_id', '');
 				document.getElementById("v2_transport").value = transport;
@@ -811,6 +843,13 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 				document.getElementById("v2_flow").value = getProperty(ss, 'flow', '0');
 				//document.getElementById("v2_tls").checked =  document.getElementById("v2_tls").value != 0;
 				document.getElementById("ssp_tls_host").value = getProperty(ss, 'tls_host', '');
+
+				document.getElementById("v2_fingerprint").value = getProperty(ss, 'fingerprint', 'chrome');
+				document.getElementById("v2_reality_public_key").value = getProperty(ss, 'reality_public_key', '');
+				document.getElementById("v2_reality_short_id").value = getProperty(ss, 'reality_short_id', '');
+				document.getElementById("v2_reality_spider_x").value = getProperty(ss, 'reality_spider_x', '/');
+				document.getElementById("v2_pinned_peer_cert_sha256").value = getProperty(ss, 'pinned_peer_cert_sha256', '');
+				document.getElementById("v2_splithttp_mode").value = getProperty(ss, 'splithttp_mode', 'auto');
 				if (transport == "kcp") {
 					document.getElementById("v2_kcp_guise").value = getProperty(ss, 'kcp_guise', 'none');
 					document.getElementById("v2_mtu").value = getProperty(ss, 'mtu', '');
@@ -834,7 +873,7 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 				}else if (transport == "httpupgrade") {
 					document.getElementById("v2_httpupgrade_host").value = getProperty(ss, 'httpupgrade_host', '');
 					document.getElementById("v2_httpupgrade_path").value = getProperty(ss, 'httpupgrade_path', '');
-				}else if (transport == "wsplithttp") {
+				}else if (transport == "splithttp") {
 					document.getElementById("v2_splithttp_host").value = getProperty(ss, 'splithttp_host', '');
 					document.getElementById("v2_splithttp_path").value = getProperty(ss, 'splithttp_path', '');
 				}
@@ -1216,93 +1255,50 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 				s.innerHTML = "<font color='green'>导入V2ray配置信息成功</font>";
 				return false;
 			} else if (ssu[0] == "vless") {
-				var url0, param = "";
-				var ploc = ssu[1].indexOf("#");
-				if (ploc > 0) {
-					url0 = ssu[1].substr(0, ploc);
-					param = ssu[1].substr(ploc + 1);
-				} else {
-					url0 = ssu[1]
+				var link = ssrurl.substring(ssrurl.indexOf('://') + 3);
+				var parts = link.match(/^([^@]+)@(\[[^\]]+\]|[^:?#]+):(\d+)(?:\?([^#]*))?(?:#(.*))?$/);
+				if (!parts) {
+					s.innerHTML = "<font color='red'>无效 VLESS 链接</font>";
+					return false;
 				}
-				if (param != undefined) {
-					document.getElementById('ssp_name').value = decodeURI(param);
+				var host = parts[2].replace(/^\[|\]$/g, '');
+				var queryParam = {};
+				var query = (parts[4] || '').split('&');
+				for (var i = 0; i < query.length; i++) {
+					var equals = query[i].indexOf('=');
+					if (equals >= 0) queryParam[decodeURIComponent(query[i].substring(0, equals))] = decodeURIComponent(query[i].substring(equals + 1));
 				}
-				var sstr = url0;
-				var team = sstr.split('@');
-				var password = team[0]
-				var serverPart = team[1].split(':');
-				var others = serverPart[1].split('?');
-				var port = others[0]
-				var queryParam = {}
-				if (others.length > 1) {
-				var queryParams = others[1]
-				var queryArray = queryParams.split('&');
-				for (i = 0; i < queryArray.length; i++) {
-					var params = queryArray[i].split('=');
-					queryParam[decodeURIComponent(params[0])] = decodeURIComponent(params[1] || '');
-									}
-							}
-				document.getElementById('ssp_server').value = serverPart[0];
-				document.getElementById('ssp_prot').value = port;
-				document.getElementById('v2_vmess_id').value = password;
-				document.getElementById('v2_alter_id').value = "0";
-				document.getElementById('ssp_type').value = "xray";
-				document.getElementById('ssp_type').dispatchEvent(event);
-				document.getElementById('v2_security').value = queryParam.encryption || "none";
-				document.getElementById('v2_transport').value = queryParam.type || "tcp";
-				document.getElementById('v2_transport').dispatchEvent(event);
-
-				if (queryParam.security == "tls") {
-					document.getElementById('v2_tls').value = '1';
-					document.getElementById('v2_flow').value = '0';
-					//document.getElementById('v2_tls').checked = true;
-					document.getElementById('ssp_insecure').value = 0;
-					document.getElementById('ssp_insecure').checked = false;
-					document.getElementById('ssp_tls_host').value = queryParam.sni || serverPart[0];
-				}
-
-				if (queryParam.type == "ws") {
-					document.getElementById('v2_ws_host').value = queryParam.host;
-					document.getElementById('v2_ws_path').value = queryParam.path;
-				}
-				if (queryParam.type == "grpc") {
-					document.getElementById('v2_grpc_path').value =  queryParam.serviceName;
-				}
-				if (queryParam.type == "h2") {
-					document.getElementById('v2_h2_host').value = queryParam.host;
-					document.getElementById('v2_h2_path').value = queryParam.path;
-				}
-				if (queryParam.type == "httpupgrade") {
-					document.getElementById('v2_httpupgrade_host').value = queryParam.host;
-					document.getElementById('v2_httpupgrade_path').value =  queryParam.path;
-				}
-				if (queryParam.type == "splithttp") {
-					document.getElementById('v2_splithttp_host').value = queryParam.host;
-					document.getElementById('v2_splithttp_path').value =  queryParam.path;
-				}
-				if (queryParam.security == "reality") {
-					document.getElementById('v2_tls').value = '2';
-					if (queryParam.flow != undefined) {
-					    if(queryParam.flow == 'xtls-rprx-vision'){
-					    	document.getElementById('v2_flow').value = '1';
-					    }
-					    else if(queryParam.flow == 'xtls-rprx-vision-udp443'){
-					    	document.getElementById('v2_flow').value = '2';
-					    }
-					    else
-					    {
-					    	document.getElementById('v2_flow').value = '0';
-					    }
-					}
-					else
-					{
-					    document.getElementById('v2_flow').value = '1';
-					}
-					//document.getElementById('v2_tls').checked = true;
-					document.getElementById('ssp_insecure').value = 0;
-					document.getElementById('ssp_insecure').checked = false;
-					document.getElementById('ssp_tls_host').value = queryParam.sni || serverPart[0];
-				}
+				var transport = queryParam.type || 'tcp';
+				if (transport == 'raw') transport = 'tcp';
+				if (transport == 'xhttp') transport = 'splithttp';
+				document.getElementById('ssp_name').value = decodeURIComponent(parts[5] || host + ':' + parts[3]);
+				document.getElementById('ssp_server').value = host;
+				document.getElementById('ssp_prot').value = parts[3];
+				document.getElementById('v2_vmess_id').value = decodeURIComponent(parts[1]);
+				document.getElementById('v2_alter_id').value = '0';
+				document.getElementById('ssp_type').value = 'xray';
+				document.getElementById('v2_vless_encryption').value = queryParam.encryption || 'none';
+				document.getElementById('v2_transport').value = transport;
+				document.getElementById('v2_tls').value = queryParam.security == 'reality' ? '2' : (queryParam.security == 'tls' ? '1' : '0');
+				document.getElementById('v2_flow').value = queryParam.flow == 'xtls-rprx-vision' ? '1' : (queryParam.flow == 'xtls-rprx-vision-udp443' ? '2' : '0');
+				document.getElementById('ssp_tls_host').value = queryParam.sni || queryParam.serverName || host;
+				document.getElementById('v2_fingerprint').value = queryParam.fp || 'chrome';
+				document.getElementById('v2_reality_public_key').value = queryParam.pbk || '';
+				document.getElementById('v2_reality_short_id').value = queryParam.sid || '';
+				document.getElementById('v2_reality_spider_x').value = queryParam.spx || '/';
+				document.getElementById('v2_pinned_peer_cert_sha256').value = queryParam.pcs || '';
+				document.getElementById('v2_tcp_guise').value = queryParam.headerType || 'none';
+				document.getElementById('v2_http_host').value = queryParam.host || '';
+				document.getElementById('v2_http_path').value = queryParam.path || '/';
+				document.getElementById('v2_ws_host').value = queryParam.host || '';
+				document.getElementById('v2_ws_path').value = queryParam.path || '/';
+				document.getElementById('v2_grpc_path').value = queryParam.serviceName || queryParam.path || '';
+				document.getElementById('v2_httpupgrade_host').value = queryParam.host || '';
+				document.getElementById('v2_httpupgrade_path').value = queryParam.path || '/';
+				document.getElementById('v2_splithttp_host').value = queryParam.host || '';
+				document.getElementById('v2_splithttp_path').value = queryParam.path || '/';
+				document.getElementById('v2_splithttp_mode').value = queryParam.mode || 'auto';
+				switch_ss_type();
 				s.innerHTML = "<font color='green'>导入Xray配置信息成功</font>";
 				return false;
 			}
@@ -1372,6 +1368,24 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 			}
 		}
 		function add_ss() {
+			if (document.getElementById('ssp_type').value == 'xray') {
+				var transport = document.getElementById('v2_transport').value;
+				if (!transport) {
+					alert('请选择 Xray 支持的传输方式');
+					return false;
+				}
+				if (transport == 'h2' || transport == 'quic') {
+					alert('新版 Xray 已移除旧 H2/QUIC 传输，请更换节点或在服务端和客户端配置 XHTTP');
+					return false;
+				}
+				if (document.getElementById('v2_tls').value == '2' && !document.getElementById('v2_reality_public_key').value) {
+					alert('请填写 REALITY 公钥 (pbk)');
+					return false;
+				}
+				// Xray 使用证书验证或证书指纹，不再支持 allowInsecure。
+				document.getElementById('ssp_insecure').value = 0;
+				document.getElementById('ssp_insecure').checked = false;
+			}
 			showhide_div('vpnc_settings', 0);
 			var type = document.getElementById("ssp_type").value;
 			if (type == "ss") {
@@ -1410,7 +1424,7 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 					server_port: document.getElementById("ssp_prot").value,
 					insecure: document.getElementById("ssp_insecure").value,
 					mux: document.getElementById("v2_mux").value,
-					security: document.getElementById("v2_security").value,
+					security: type == 'xray' ? document.getElementById("v2_vless_encryption").value : document.getElementById("v2_security").value,
 					vmess_id: document.getElementById("v2_vmess_id").value,
 					alter_id: document.getElementById("v2_alter_id").value,
 					transport: document.getElementById("v2_transport").value,
@@ -1419,6 +1433,12 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 					http_path: document.getElementById("v2_http_path").value,
 					tls: document.getElementById("v2_tls").value,
 					flow: document.getElementById("v2_flow").value,
+					fingerprint: document.getElementById("v2_fingerprint").value,
+					reality_public_key: document.getElementById("v2_reality_public_key").value,
+					reality_short_id: document.getElementById("v2_reality_short_id").value,
+					reality_spider_x: document.getElementById("v2_reality_spider_x").value,
+					pinned_peer_cert_sha256: document.getElementById("v2_pinned_peer_cert_sha256").value,
+					splithttp_mode: document.getElementById("v2_splithttp_mode").value,
 					tls_host: document.getElementById("ssp_tls_host").value,
 					coustom: "1",
 				}
@@ -2043,6 +2063,10 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 																</select>
 															</td>
 														</tr>
+														<tr id="row_v2_vless_encryption" style="display:none;">
+															<th width="50%">VLESS Encryption</th>
+															<td><input type="text" class="input" id="v2_vless_encryption" style="width: 200px" value="none" /></td>
+														</tr>
 														<tr id="row_v2_net" style="display:none;">
 															<th width="50%">传输方式：</th>
 															<td>
@@ -2054,7 +2078,7 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 																	<option value="h2">HTTP/2</option>
 																	<option value="quic">QUIC</option>
 																	<option value="httpupgrade">HTTPUpgrade</option>
-																	<option value="splithttp">SplitHTTP</option>
+																	<option value="splithttp">XHTTP (SplitHTTP)</option>
 																</select>
 															</td>
 														</tr>
@@ -2215,7 +2239,7 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 														<tr id="row_v2_tls" style="display:none;">
 															<th width="50%">TLS/Reality</th>
 															<td>
-																<select name="v2_tls" id="v2_tls" class="input" style="width: 200px;">
+																<select name="v2_tls" id="v2_tls" class="input" style="width: 200px;" onchange="switch_xray_security()">
 																	<option value="0">未配置</option>
 																	<option value="1">tls</option>
 																	<option value="2">Reality</option>
@@ -2231,6 +2255,30 @@ setTimeout('document.getElementById("btn_ctime").style.display="none";',1000);
 																	<option value="2">xtls-rprx-vision-udp443</option>
 																</select>
 															</td>
+														</tr>
+														<tr id="row_v2_fingerprint" style="display:none;">
+															<th width="50%">客户端指纹 (fp)</th>
+															<td><input type="text" class="input" id="v2_fingerprint" style="width: 200px" value="chrome" /></td>
+														</tr>
+														<tr id="row_v2_reality_public_key" style="display:none;">
+															<th width="50%">REALITY 公钥 (pbk)</th>
+															<td><input type="text" class="input" id="v2_reality_public_key" style="width: 200px" value="" /></td>
+														</tr>
+														<tr id="row_v2_reality_short_id" style="display:none;">
+															<th width="50%">REALITY Short ID (sid)</th>
+															<td><input type="text" class="input" id="v2_reality_short_id" style="width: 200px" value="" /></td>
+														</tr>
+														<tr id="row_v2_reality_spider_x" style="display:none;">
+															<th width="50%">REALITY SpiderX (spx)</th>
+															<td><input type="text" class="input" id="v2_reality_spider_x" style="width: 200px" value="/" /></td>
+														</tr>
+														<tr id="row_v2_cert_pin" style="display:none;">
+															<th width="50%">TLS 证书 SHA256 (pcs)</th>
+															<td><input type="text" class="input" id="v2_pinned_peer_cert_sha256" style="width: 200px" value="" /></td>
+														</tr>
+														<tr id="row_v2_splithttp_mode" style="display:none;">
+															<th width="50%">XHTTP Mode</th>
+															<td><select id="v2_splithttp_mode" class="input" style="width: 200px;"><option value="auto">auto</option><option value="packet-up">packet-up</option><option value="stream-up">stream-up</option><option value="stream-one">stream-one</option></select></td>
 														</tr>
 														<tr id="row_tj_tls_host" style="display:none;">
 															<th width="50%">TLS Host</th>

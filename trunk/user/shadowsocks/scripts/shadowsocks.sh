@@ -94,6 +94,16 @@ cgroups_cleanup() {
 	rmdir /sys/fs/cgroup/memory/$NAME
 }
 
+gen_xray_config() {
+	local output="$5"
+	if ! lua /etc_ro/ss/genxrayconfig.lua "$1" "$2" "$3" "$4" >"${output}.tmp" 2>>/tmp/ssrplus.log; then
+		rm -f "${output}.tmp"
+		log "Xray 配置生成失败，请检查 /tmp/ssrplus.log"
+		return 1
+	fi
+	mv -f "${output}.tmp" "$output"
+}
+
 gen_config_file() {
 	#fastopen="false"
 	case "$2" in
@@ -134,11 +144,9 @@ gen_config_file() {
 	xray)
 		v2ray_enable=1
 		if [ "$2" = "1" ]; then
-			lua /etc_ro/ss/genxrayconfig.lua $1 udp 1080 >/tmp/v2-ssr-reudp.json
-			sed -i 's/\\//g' /tmp/v2-ssr-reudp.json
+			gen_xray_config "$1" udp 1080 0 /tmp/v2-ssr-reudp.json || return 1
 		else
-			lua /etc_ro/ss/genxrayconfig.lua $1 tcp 1080 >$v2_json_file
-			sed -i 's/\\//g' $v2_json_file
+			gen_xray_config "$1" tcp 1080 0 "$v2_json_file" || return 1
 		fi
 		;;	
 	esac
@@ -238,7 +246,7 @@ start_rules() {
 
 start_redir_tcp() {
 	ARG_OTA=""
-	gen_config_file $GLOBAL_SERVER 0 1080
+	gen_config_file $GLOBAL_SERVER 0 1080 || return 1
 	stype=$(nvram get d_type)
 	local bin=$(find_bin $stype)
 	[ ! -f "$bin" ] && log "Main node:Can't find $bin program, can't start!" && return 1
@@ -304,7 +312,7 @@ start_redir_udp() {
 			run_bin $bin -config /tmp/v2-ssr-reudp.json
 			;;
 		xray)
-			gen_config_file $UDP_RELAY_SERVER 1
+			gen_config_file $UDP_RELAY_SERVER 1 || return 1
 			run_bin $bin -config /tmp/v2-ssr-reudp.json
 			;;	
 		trojan)
@@ -464,8 +472,7 @@ start_local() {
 		log "Global_Socks5:$($bin -version | head -1) Started!"
 		;;
 	xray)
-		lua /etc_ro/ss/genxrayconfig.lua $local_server tcp 0 $s5_port >/tmp/v2-ssr-local.json
-		sed -i 's/\\//g' /tmp/v2-ssr-local.json
+		gen_xray_config "$local_server" tcp 0 "$s5_port" /tmp/v2-ssr-local.json || return 1
 		run_bin $bin -config /tmp/v2-ssr-local.json
 		log "Global_Socks5:$($bin -version | head -1) Started!"
 		;;

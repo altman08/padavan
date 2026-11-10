@@ -1,144 +1,130 @@
 local cjson = require "cjson"
 local server_section = arg[1]
 local proto = arg[2]
-local local_port = arg[3] or "0"
-local socks_port = arg[4] or "0"
-local ssrindext = io.popen("dbus get ssconf_basic_json_" .. server_section)
+local local_port = tonumber(arg[3]) or 0
+local socks_port = tonumber(arg[4]) or 0
+local ssrindext = assert(io.popen("dbus get ssconf_basic_json_" .. server_section))
 local servertmp = ssrindext:read("*all")
+ssrindext:close()
 local server = cjson.decode(servertmp)
-local xray = {
-	log = {
-		-- error = "/tmp/ssrplus.log",
-		loglevel = "warning"
-	},
-	-- 传入连接
-	inbounds = {
-		(local_port ~= "0") and {
+
+local function nonempty(value, default)
+	if value == nil or value == "" then return default end
+	return value
+end
+
+local function string_list(value, default)
+	if type(value) == "table" then return value end
+	return {nonempty(value, default)}
+end
+
+local transport = nonempty(server.transport, "tcp")
+if transport == "tcp" then transport = "raw" end
+if transport == "splithttp" then transport = "xhttp" end
+if transport == "h2" or transport == "http" or transport == "h3" or transport == "quic" then
+	error("Xray 已移除旧 H2/QUIC 传输，请更换节点或在服务端和客户端配置 XHTTP")
+end
+
+local tls = tostring(server.tls or "0")
+if tls == "1" and tostring(server.insecure or "0") ~= "0" then
+	error("Xray 已移除 allowInsecure，请验证服务端证书或配置 pinnedPeerCertSha256")
+end
+local flow = tostring(server.flow or "0")
+flow = (flow == "1") and "xtls-rprx-vision" or
+	((flow == "2") and "xtls-rprx-vision-udp443" or "")
+
+local inbounds = {}
+if local_port ~= 0 then
+	table.insert(inbounds, {
 		port = local_port,
 		protocol = "dokodemo-door",
-		settings = {
-			network = proto,
-			followRedirect = true
-		},
-		sniffing = {
-			enabled = true,
-			destOverride = { "http", "tls" }
-		}
-	} or nil,
-	-- 开启 socks 代理
-	(proto == "tcp" and socks_port ~= "0") and {
-		{
+		settings = {network = proto, followRedirect = true},
+		sniffing = {enabled = true, destOverride = {"http", "tls"}}
+	})
+end
+if proto == "tcp" and socks_port ~= 0 then
+	table.insert(inbounds, {
 		protocol = "socks",
 		port = socks_port,
-			settings = {
-				auth = "noauth",
-				udp = true
-			}
+		settings = {auth = "noauth", udp = true}
+	})
+end
+assert(#inbounds > 0, "Xray 至少需要一个入站端口")
+
+local stream = {
+	network = transport,
+	security = (tls == "1") and "tls" or ((tls == "2") and "reality" or "none"),
+	tlsSettings = (tls == "1") and {
+		serverName = nonempty(server.tls_host),
+		fingerprint = nonempty(server.fingerprint),
+		pinnedPeerCertSha256 = nonempty(server.pinned_peer_cert_sha256)
+	} or nil,
+	realitySettings = (tls == "2") and {
+		serverName = nonempty(server.tls_host, server.server),
+		fingerprint = nonempty(server.fingerprint, "chrome"),
+		password = nonempty(server.reality_public_key),
+		shortId = server.reality_short_id or "",
+		spiderX = nonempty(server.reality_spider_x, "/")
+	} or nil,
+	rawSettings = (transport == "raw" and tls ~= "2") and {
+		header = {
+			type = nonempty(server.tcp_guise, "none"),
+			request = (server.tcp_guise == "http") and {
+				path = string_list(server.http_path, "/"),
+				headers = nonempty(server.http_host) and {Host = string_list(server.http_host)} or nil
+			} or nil
 		}
 	} or nil,
-	},
-	-- 传出连接
-	outbounds = {{
-		protocol = "vless",
-		settings = {
-			vnext = {
-				{
-					address = server.server,
-					port = tonumber(server.server_port),
-					users = {
-						{
-							id = server.vmess_id,
-							flow = (server.flow == '1') and "xtls-rprx-vision" or ((server.flow == '2') and "xtls-rprx-vision-udp443" or ""),
-							level = tonumber(server.alter_id),
-							encryption = server.security
-						}
-					}
-				}
-			}
-		},
-	-- 底层传输配置
-		streamSettings = {
-			network = server.transport,
-			security = (server.tls == '1') and "tls" or ((server.tls == '2') and "reality" or "none"),
-			tlsSettings = (server.tls == '1') and 
-			{
-				allowInsecure = (server.insecure ~= "0") and true or false,
-				serverName=server.tls_host
-			} or nil,
+	kcpSettings = (transport == "kcp" or transport == "mkcp") and {
+		mtu = tonumber(server.mtu),
+		tti = tonumber(server.tti),
+		uplinkCapacity = tonumber(server.uplink_capacity),
+		downlinkCapacity = tonumber(server.downlink_capacity),
+		congestion = tostring(server.congestion) == "1",
+		readBufferSize = tonumber(server.read_buffer_size),
+		writeBufferSize = tonumber(server.write_buffer_size),
+		header = {type = nonempty(server.kcp_guise, "none")}
+	} or nil,
+	wsSettings = (transport == "ws" or transport == "websocket") and {
+		path = nonempty(server.ws_path, "/"),
+		host = nonempty(server.ws_host)
+	} or nil,
+	grpcSettings = (transport == "grpc") and {
+		serviceName = server.grpc_path or ""
+	} or nil,
+	httpupgradeSettings = (transport == "httpupgrade") and {
+		path = nonempty(server.httpupgrade_path, "/"),
+		host = nonempty(server.httpupgrade_host)
+	} or nil,
+	xhttpSettings = (transport == "xhttp") and {
+		path = nonempty(server.splithttp_path, "/"),
+		host = nonempty(server.splithttp_host),
+		mode = nonempty(server.splithttp_mode, "auto")
+	} or nil
+}
+if tls == "2" then
+	assert(stream.realitySettings.password, "REALITY 缺少公钥 (pbk)")
+end
 
-			realitySettings = (server.tls == '2') and
-			{
-				allowInsecure = (server.insecure ~= "0") and true or false,
-				serverName = server.tls_host
-			} or nil,
-		        tcpSettings = (server.transport == "tcp" and server.tls ~= '2') and {
-				header = {
-					type = server.tcp_guise, --伪装
-					request = {
-						path = server.http_path or {"/"},
-						headers = {
-							Host = server.http_host or {}
-						}
-					} or {}
-				}
-			} or nil,
-			kcpSettings = (server.transport == "kcp") and {
-				mtu = tonumber(server.mtu),
-				tti = tonumber(server.tti),
-				uplinkCapacity = tonumber(server.uplink_capacity),
-				downlinkCapacity = tonumber(server.downlink_capacity),
-				congestion = (server.congestion == "1") and true or false,
-				readBufferSize = tonumber(server.read_buffer_size),
-				writeBufferSize = tonumber(server.write_buffer_size),
-				header = {
-					type = server.kcp_guise
-				}
-			} or nil,
-			wsSettings = (server.transport == "ws") and (server.ws_path ~= nil or server.ws_host ~= nil) and {
-				path = server.ws_path,
-				headers = (server.ws_host ~= nil) and {
-					Host = server.ws_host
-				} or nil,
-			} or nil,
-			grpcSettings = (server.transport == "grpc") and (server.grpc_path ~= nil) and {
-				serviceName = server.grpc_path
-			} or nil,
-			httpSettings = (server.transport == "h2") and {
-				path = server.h2_path,
-				host = server.h2_host,
-			} or nil,
-			quicSettings = (server.transport == "quic") and {
-				security = server.quic_security,
-				key = server.quic_key,
-				header = {
-					type = server.quic_guise
-				}
-			} or nil,
-			httpupgradeSettings = (server.transport == "httpupgrade") and (server.httpupgrade_path ~= nil or server.httpupgrade_host ~= nil) and {
-				path = server.httpupgrade_path,
-				headers = (server.httpupgrade_host ~= nil) and {
-					Host = server.httpupgrade_host
-				} or nil,
-			} or nil,
-			splithttpSettings = (server.transport == "splithttp") and (server.splithttp_path ~= nil or server.splithttp_host ~= nil) and {
-				path = server.splithttp_path,
-				headers = (server.splithttp_host ~= nil) and {
-					Host = server.splithttp_host
-				} or nil,
-			} or nil,
-		},
-		mux = {
-			enabled = (server.mux == "1") and true or false,
-			concurrency = tonumber(server.concurrency)
-		}
-	},
-
-	-- 额外传出连接
+local xray = {
+	log = {loglevel = "warning"},
+	inbounds = inbounds,
+	outbounds = {
 		{
-			protocol = "freedom",
-			tag = "direct",
-			settings = { keep = "" }
-		}
+			protocol = "vless",
+			settings = {
+				address = server.server,
+				port = tonumber(server.server_port),
+				id = server.vmess_id,
+				flow = flow,
+				level = tonumber(server.alter_id) or 0,
+				encryption = nonempty(server.security, "none")
+			},
+			streamSettings = stream,
+			-- Vision 不支持 TCP Mux；使用节点指定的原生连接。
+			mux = {enabled = tostring(server.mux) == "1" and flow == "", concurrency = tonumber(server.concurrency) or 8}
+		},
+		{protocol = "freedom", tag = "direct"}
 	}
 }
 

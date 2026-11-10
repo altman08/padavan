@@ -187,97 +187,65 @@ local function processData(szType, content)
 			result.tls = "0"
 		end
 	elseif szType == 'vless' then
-		local idx_sp = 0
-		local alias = ""
-		if content:find("#") then
-			idx_sp = content:find("#")
-			alias = content:sub(idx_sp + 1, -1)
+		local info, alias = content:match("^([^#]*)#?(.*)$")
+		local userinfo, endpoint = info:match("^([^@]+)@(.+)$")
+		if not endpoint then return nil end
+		local address, query = endpoint:match("^([^?]+)%??(.*)$")
+		local host, port = address:match("^%[([^%]]+)%]:(%d+)$")
+		if not host then host, port = address:match("^([^:]+):(%d+)$") end
+		if not host then return nil end
+		local params = {}
+		for item in query:gmatch("[^&]+") do
+			local key, value = item:match("^([^=]+)=(.*)$")
+			if key then params[UrlDecode(key)] = UrlDecode(value) end
 		end
-		local info = content:sub(1, idx_sp - 1)
-		local hostInfo = split(info, "@")
-		local host = split(hostInfo[2], ":")
-		local userinfo = hostInfo[1]
-		local password = userinfo		
-		result.alias = UrlDecode(alias)
+		result.alias = (alias ~= "") and UrlDecode(alias) or (host .. ':' .. port)
 		result.type = "xray"
-		result.server = host[1]
-		-- 按照官方的建议 默认验证ssl证书
+		result.server = host
+		result.server_port = port
+		result.vmess_id = UrlDecode(userinfo)
+		result.alter_id = 0
 		result.insecure = "0"
-		result.security = "none"
-		result.tls = "1"
-		if host[2]:find("?") then
-			local query = split(host[2], "?")
-			result.server_port = query[1]
-			local params = {}
-			for _, v in pairs(split(UrlDecode(query[2]), '&')) do
-				local t = split(v, '=')
-				params[t[1]] = t[2]
-			end
-			result.transport = params.type --vless的传输方式tcp/kcp/ws/http/quic
-			result.network = params.type
-			if result.transport == 'ws' then
-				result.ws_host = params.host
-				result.ws_path = params.path
-			end
-			if result.transport == 'h2' then
-				result.h2_host = params.host
-				result.h2_path = params.path
-			end
-			if result.transport == 'tcp' then
-				if params.type and params.type ~= "http" then
-					params.type = "none"
-				end
-				result.tcp_guise = params.type
-				result.http_host = params.host
-				result.http_path = params.path
-			end
-			if result.transport == 'kcp' then
-				result.kcp_guise = params.type
-				result.mtu = 1350
-				result.tti = 50
-				result.uplink_capacity = 5
-				result.downlink_capacity = 20
-				result.read_buffer_size = 2
-				result.write_buffer_size = 2
-			end
-			if result.transport == 'quic' then
-				result.quic_guise = params.type
-				result.quic_key = params.key
-				result.quic_security = params.security
-			end
-			if info.net == 'httpupgrade' then
-			result.httpupgrade_host = info.host
-			result.httpupgrade_path = info.path
-			end
-			if info.net == 'splithttp' then
-			result.splithttp_host = info.host
-			result.splithttp_path = info.path
-			end
-			if params.encryption then
-				result.security = params.encryption --vless security默认none
-			end
-			if params.security == "tls" or params.security == "1" then --传输层security
-				result.tls = "1"
-				result.tls_host = params.host
-				result.insecure = 0
-				result.flow = "0"
-			elseif params.security == "reality" or params.security == "2" then
-				result.tls = "2"
-				result.tls_host = params.host
-				result.insecure = 0
-				if params.flow == "xtls-rprx-vision" then
-					result.flow = "1"
-				else
-					result.flow = "2"
-				end
-			else
-				result.tls = "0"
-			end
-		else
-			result.server_port = host[2]
+		result.security = params.encryption or "none"
+		result.transport = params.type or "tcp"
+		if result.transport == "raw" then result.transport = "tcp" end
+		if result.transport == "xhttp" then result.transport = "splithttp" end
+		result.network = result.transport
+		result.tls = (params.security == "tls" or params.security == "1") and "1" or
+			((params.security == "reality" or params.security == "2") and "2" or "0")
+		result.tls_host = params.sni or params.serverName or host
+		result.fingerprint = params.fp or "chrome"
+		result.reality_public_key = params.pbk
+		result.reality_short_id = params.sid or ""
+		result.reality_spider_x = params.spx or "/"
+		result.pinned_peer_cert_sha256 = params.pcs
+		result.flow = (params.flow == "xtls-rprx-vision") and "1" or
+			((params.flow == "xtls-rprx-vision-udp443") and "2" or "0")
+		if result.transport == "tcp" then
+			result.tcp_guise = params.headerType or "none"
+			result.http_host = params.host
+			result.http_path = params.path
+		elseif result.transport == "ws" then
+			result.ws_host = params.host
+			result.ws_path = params.path
+		elseif result.transport == "grpc" then
+			result.grpc_path = params.serviceName or params.path
+		elseif result.transport == "httpupgrade" then
+			result.httpupgrade_host = params.host
+			result.httpupgrade_path = params.path
+		elseif result.transport == "splithttp" then
+			result.splithttp_host = params.host
+			result.splithttp_path = params.path
+			result.splithttp_mode = params.mode or "auto"
+		elseif result.transport == "kcp" then
+			result.kcp_guise = params.headerType or "none"
+			result.mtu = 1350
+			result.tti = 50
+			result.uplink_capacity = 5
+			result.downlink_capacity = 20
+			result.read_buffer_size = 2
+			result.write_buffer_size = 2
 		end
-		result.alter_id = 0 --设为level
-		result.vmess_id = password
 	elseif szType == "ss" then
 		local idx_sp = 0
 		local alias = ""
@@ -480,7 +448,7 @@ end
 								not result.server or
 								not result.server_port or
 								check_filer(result) or
-								result.server:match("[^0-9a-zA-Z%-%.%s]") -- 中文做地址的 也没有人拿中文域名搞，就算中文域也有Puny Code SB 机场
+								result.server:match("[^0-9a-zA-Z%-%.:%s]") -- 中文做地址的 也没有人拿中文域名搞，就算中文域也有Puny Code SB 机场
 							then
 								log('丢弃无效节点: ' .. result.type ..' 节点, ' .. result.alias)
 							else

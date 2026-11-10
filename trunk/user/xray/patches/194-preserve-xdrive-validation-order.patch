@@ -1,0 +1,22 @@
+Subject: [PATCH] validate outbound transport before generic security checks
+
+The lite split moved XDrive validation after the generic TLS/encryption
+check. Restore XDrive error precedence, as required by the upstream
+TestXDriveOutboundConfig regression test. Keep the copied lite patch intact.
+
+--- a/infra/conf/xray.go
++++ b/infra/conf/xray.go
+@@ -281,11 +281,11 @@
+ 	if err != nil {
+ 		return nil, errors.New("failed to build outbound handler for protocol ", c.Protocol).Base(err)
+ 	}
+-	if err := validateOutboundTransportSecurity(rawConfig, senderSettings); err != nil {
++	if err := validateOutboundTransport(ts, senderSettings); err != nil {
+ 		return nil, err
+ 	}
+ 
+-	if err := validateOutboundTransport(ts, senderSettings); err != nil {
++	if err := validateOutboundTransportSecurity(rawConfig, senderSettings); err != nil {
+ 		return nil, err
+ 	}
+ 

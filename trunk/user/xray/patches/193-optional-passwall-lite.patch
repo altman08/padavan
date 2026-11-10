@@ -1,0 +1,2862 @@
+Subject: [PATCH] add optional xray_lite client distribution for Passwall
+
+Keep the upstream data plane, JSON builders and socket options for SOCKS,
+REDIRECT/TPROXY, VLESS RAW/TLS/REALITY Vision, freedom and blackhole.
+Retain upstream SOCKS HTTP fallback and VLESS reverse proxy implementations.
+Use build tags to exclude unused config builders and runtime registries.
+Split hidden Hysteria, Lua, gRPC credentials, ECH DNS and YAML/TOML
+out of the lite client. Reject omitted features explicitly. Default builds
+retain the complete upstream features. The existing ARM64 EIP93
+standard-library overlay remains independent.
+
+diff --git a/app/proxyman/inbound/transport_full.go b/app/proxyman/inbound/transport_full.go
+new file mode 100644
+index 0000000..6462334
+--- /dev/null
++++ b/app/proxyman/inbound/transport_full.go
+@@ -0,0 +1,17 @@
++//go:build !xray_lite
++
++package inbound
++
++import (
++	"context"
++	"github.com/xtls/xray-core/proxy"
++	hysteria_proxy "github.com/xtls/xray-core/proxy/hysteria"
++	"github.com/xtls/xray-core/transport/internet/hysteria"
++)
++
++func inboundTransportContext(ctx context.Context, p proxy.Inbound) context.Context {
++	if v, ok := p.(*hysteria_proxy.Server); ok {
++		return hysteria.ContextWithValidator(ctx, v.HysteriaInboundValidator())
++	}
++	return ctx
++}
+diff --git a/app/proxyman/inbound/transport_lite.go b/app/proxyman/inbound/transport_lite.go
+new file mode 100644
+index 0000000..0031651
+--- /dev/null
++++ b/app/proxyman/inbound/transport_lite.go
+@@ -0,0 +1,10 @@
++//go:build xray_lite
++
++package inbound
++
++import (
++	"context"
++	"github.com/xtls/xray-core/proxy"
++)
++
++func inboundTransportContext(ctx context.Context, _ proxy.Inbound) context.Context { return ctx }
+diff --git a/app/proxyman/inbound/worker.go b/app/proxyman/inbound/worker.go
+index 4a3bb6d..80070f7 100644
+--- a/app/proxyman/inbound/worker.go
++++ b/app/proxyman/inbound/worker.go
+@@ -18,9 +18,7 @@ import (
+ 	"github.com/xtls/xray-core/features/routing"
+ 	"github.com/xtls/xray-core/features/stats"
+ 	"github.com/xtls/xray-core/proxy"
+-	hysteria_proxy "github.com/xtls/xray-core/proxy/hysteria"
+ 	"github.com/xtls/xray-core/transport/internet"
+-	"github.com/xtls/xray-core/transport/internet/hysteria"
+ 	"github.com/xtls/xray-core/transport/internet/stat"
+ 	"github.com/xtls/xray-core/transport/internet/tcp"
+ 	"github.com/xtls/xray-core/transport/internet/udp"
+@@ -134,9 +132,7 @@ func (w *tcpWorker) Proxy() proxy.Inbound {
+ func (w *tcpWorker) Start() error {
+ 	ctx := context.Background()
+ 
+-	if v, ok := w.proxy.(*hysteria_proxy.Server); ok {
+-		ctx = hysteria.ContextWithValidator(ctx, v.HysteriaInboundValidator())
+-	}
++	ctx = inboundTransportContext(ctx, w.proxy)
+ 
+ 	hub, err := internet.ListenTCP(ctx, w.address, w.port, w.stream, func(conn stat.Connection) {
+ 		go w.callback(conn)
+diff --git a/app/router/lua.go b/app/router/lua.go
+index fd808f7..51ab42e 100644
+--- a/app/router/lua.go
++++ b/app/router/lua.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package router
+ 
+ import (
+diff --git a/app/router/lua_benchmark_test.go b/app/router/lua_benchmark_test.go
+index a1424ce..336aece 100644
+--- a/app/router/lua_benchmark_test.go
++++ b/app/router/lua_benchmark_test.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package router
+ 
+ import (
+diff --git a/app/router/lua_test.go b/app/router/lua_test.go
+index bf71e56..144425d 100644
+--- a/app/router/lua_test.go
++++ b/app/router/lua_test.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package router
+ 
+ import (
+diff --git a/app/router/script.go b/app/router/script.go
+index e2659cb..0c27e87 100644
+--- a/app/router/script.go
++++ b/app/router/script.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package router
+ 
+ import (
+diff --git a/app/router/script_lite.go b/app/router/script_lite.go
+new file mode 100644
+index 0000000..0d037dc
+--- /dev/null
++++ b/app/router/script_lite.go
+@@ -0,0 +1,22 @@
++//go:build xray_lite
++
++package router
++
++import (
++	"github.com/xtls/xray-core/common/errors"
++	"github.com/xtls/xray-core/features/routing"
++)
++
++// No DNS application or Lua routing entry points are linked in the lite distribution.
++type scriptEngine struct{}
++
++func newScriptEngine(string) (*scriptEngine, error) {
++	return nil, errors.New("routing scripts excluded from xray_lite")
++}
++func (*scriptEngine) start(*Router) error {
++	return errors.New("routing scripts excluded from xray_lite")
++}
++func (*scriptEngine) close() {}
++func (*scriptEngine) pickRoute(routing.Context) (routing.Route, error) {
++	return nil, errors.New("routing scripts excluded from xray_lite")
++}
+diff --git a/app/router/script_test.go b/app/router/script_test.go
+index 599ebbf..71484d5 100644
+--- a/app/router/script_test.go
++++ b/app/router/script_test.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package router
+ 
+ import (
+diff --git a/common/geodata/lua.go b/common/geodata/lua.go
+index e144aa4..9fb8c91 100644
+--- a/common/geodata/lua.go
++++ b/common/geodata/lua.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package geodata
+ 
+ import (
+diff --git a/common/geodata/lua_test.go b/common/geodata/lua_test.go
+index fafc49c..a6980ce 100644
+--- a/common/geodata/lua_test.go
++++ b/common/geodata/lua_test.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package geodata
+ 
+ import (
+diff --git a/common/log/lua.go b/common/log/lua.go
+index 99db47b..28e5fb9 100644
+--- a/common/log/lua.go
++++ b/common/log/lua.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package log
+ 
+ import (
+diff --git a/common/log/lua_test.go b/common/log/lua_test.go
+index 759bae5..4742bb8 100644
+--- a/common/log/lua_test.go
++++ b/common/log/lua_test.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package log
+ 
+ import (
+diff --git a/infra/conf/api.go b/infra/conf/api.go
+index dca3491..cf9572d 100644
+--- a/infra/conf/api.go
++++ b/infra/conf/api.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf
+ 
+ import (
+diff --git a/infra/conf/dns.go b/infra/conf/dns.go
+index 71ac951..2ed5e44 100644
+--- a/infra/conf/dns.go
++++ b/infra/conf/dns.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf
+ 
+ import (
+diff --git a/infra/conf/dns_proxy.go b/infra/conf/dns_proxy.go
+index aabdea8..1e6af03 100644
+--- a/infra/conf/dns_proxy.go
++++ b/infra/conf/dns_proxy.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf
+ 
+ import (
+diff --git a/infra/conf/dns_proxy_test.go b/infra/conf/dns_proxy_test.go
+index b88b0cf..9504727 100644
+--- a/infra/conf/dns_proxy_test.go
++++ b/infra/conf/dns_proxy_test.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf_test
+ 
+ import (
+diff --git a/infra/conf/dns_test.go b/infra/conf/dns_test.go
+index 0cca525..c051801 100644
+--- a/infra/conf/dns_test.go
++++ b/infra/conf/dns_test.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf_test
+ 
+ import (
+diff --git a/infra/conf/fakedns.go b/infra/conf/fakedns.go
+index e22c483..fe58bc2 100644
+--- a/infra/conf/fakedns.go
++++ b/infra/conf/fakedns.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf
+ 
+ import (
+diff --git a/infra/conf/features_full.go b/infra/conf/features_full.go
+new file mode 100644
+index 0000000..ab4f880
+--- /dev/null
++++ b/infra/conf/features_full.go
+@@ -0,0 +1,143 @@
++//go:build !xray_lite
++
++package conf
++
++import (
++	"github.com/xtls/xray-core/app/proxyman"
++	"github.com/xtls/xray-core/common/errors"
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/proxy/masque"
++	"github.com/xtls/xray-core/proxy/vless"
++	"github.com/xtls/xray-core/proxy/vless/inbound"
++	"github.com/xtls/xray-core/proxy/vless/outbound"
++	"github.com/xtls/xray-core/transport/internet"
++	"google.golang.org/protobuf/proto"
++)
++
++var (
++	inboundConfigLoader = NewJSONConfigLoader(ConfigCreatorCache{
++		"tunnel":        func() interface{} { return new(DokodemoConfig) },
++		"dokodemo-door": func() interface{} { return new(DokodemoConfig) },
++		"http":          func() interface{} { return new(HTTPServerConfig) },
++		"shadowsocks":   func() interface{} { return new(ShadowsocksServerConfig) },
++		"mixed":         func() interface{} { return new(SocksServerConfig) },
++		"socks":         func() interface{} { return new(SocksServerConfig) },
++		"vless":         func() interface{} { return new(VLessInboundConfig) },
++		"vmess":         func() interface{} { return new(VMessInboundConfig) },
++		"trojan":        func() interface{} { return new(TrojanServerConfig) },
++		"wireguard":     func() interface{} { return &WireGuardConfig{IsClient: false} },
++		"hysteria":      func() interface{} { return new(HysteriaServerConfig) },
++		"masque":        func() interface{} { return new(MasqueServerConfig) },
++		"tun":           func() interface{} { return new(TunConfig) },
++	}, "protocol", "settings")
++
++	outboundConfigLoader = NewJSONConfigLoader(ConfigCreatorCache{
++		"block":       func() interface{} { return new(BlackholeConfig) },
++		"blackhole":   func() interface{} { return new(BlackholeConfig) },
++		"loopback":    func() interface{} { return new(LoopbackConfig) },
++		"direct":      func() interface{} { return new(FreedomConfig) },
++		"freedom":     func() interface{} { return new(FreedomConfig) },
++		"http":        func() interface{} { return new(HTTPClientConfig) },
++		"shadowsocks": func() interface{} { return new(ShadowsocksClientConfig) },
++		"socks":       func() interface{} { return new(SocksClientConfig) },
++		"vless":       func() interface{} { return new(VLessOutboundConfig) },
++		"vmess":       func() interface{} { return new(VMessOutboundConfig) },
++		"trojan":      func() interface{} { return new(TrojanClientConfig) },
++		"hysteria":    func() interface{} { return new(HysteriaClientConfig) },
++		"masque":      func() interface{} { return new(MasqueClientConfig) },
++		"dns":         func() interface{} { return new(DNSOutboundConfig) },
++		"wireguard":   func() interface{} { return &WireGuardConfig{IsClient: true} },
++	}, "protocol", "settings")
++)
++
++func validateOutboundTransportSecurity(rawConfig interface{}, senderSettings *proxyman.SenderConfig) error {
++	if senderSettings.StreamSettings != nil && senderSettings.StreamSettings.GetSecurityType() != "" {
++		return nil
++	}
++
++	if vlessCfg, ok := rawConfig.(*VLessOutboundConfig); ok {
++		if vlessCfg.Encryption != "" && vlessCfg.Encryption != "none" {
++			return nil
++		}
++		if requiresTransportSecurity(vlessCfg.Address) {
++			return errors.New("vless without TLS or other encryption is prohibited unless the server address is a private IP or domain")
++		}
++	}
++
++	if tjCfg, ok := rawConfig.(*TrojanClientConfig); ok {
++		if requiresTransportSecurity(tjCfg.Servers[0].Address) {
++			return errors.New("trojan without TLS is prohibited unless the server address is a private IP or domain")
++		}
++	}
++
++	return nil
++}
++
++// validateXDrive allows only VLESS with encryption on xdrive, and on the client Mux.Cool for every connection
++func validateXDrive(ts proto.Message, ss *internet.StreamConfig, ms *proxyman.MultiplexingConfig, pl *net.PortList) error {
++	if ss == nil || ss.ProtocolName != "xdrive" {
++		return nil
++	}
++	switch c := ts.(type) {
++	case *outbound.Config:
++		a, err := c.Vnext.User.Account.GetInstance()
++		if err != nil {
++			return err
++		}
++		account := a.(*vless.Account)
++		if account.Flow != "" {
++			return errors.New(`the xdrive transport doesn't support VLESS "flow"`)
++		}
++		if account.Encryption == "none" {
++			return errors.New(`the xdrive transport needs VLESS "encryption", run "xray vlessenc" to get one`)
++		}
++		// reverse opens its own mux
++		if account.Reverse == nil && (ms == nil || !ms.Enabled || ms.Concurrency < 0 || ms.XudpConcurrency < 0 || ms.XudpProxyUDP443 == "skip") {
++			return errors.New(`the xdrive transport needs "mux" enabled, with no negative "concurrency" or "xudpConcurrency" and no "xudpProxyUDP443":"skip"`)
++		}
++		if account.Testpre != 0 {
++			return errors.New(`the xdrive transport doesn't support VLESS "testpre"`)
++		}
++	case *inbound.Config:
++		if c.Decryption == "none" {
++			return errors.New(`the xdrive transport needs VLESS "decryption", run "xray vlessenc" to get one`)
++		}
++		for _, user := range c.Users {
++			a, err := user.Account.GetInstance()
++			if err != nil {
++				return err
++			}
++			if a.(*vless.Account).Flow != "" {
++				return errors.New(`the xdrive transport doesn't support VLESS "flow"`)
++			}
++		}
++		// every port gets its own listener on the same folder, and each of them accepts the same session
++		if pl != nil && len(pl.Ports()) != 1 {
++			return errors.New("the xdrive transport can only listen on one port")
++		}
++	default:
++		return errors.New("the xdrive transport can only be used by VLESS")
++	}
++	return nil
++}
++
++func validateInboundTransport(ts proto.Message, receiverSettings *proxyman.ReceiverConfig) error {
++	if _, ok := ts.(*masque.ServerConfig); !ok && receiverSettings.StreamSettings != nil && receiverSettings.StreamSettings.ProtocolName == "masque" {
++		return errors.New("the masque transport can only be used by the masque inbound")
++	}
++	if err := validateXDrive(ts, receiverSettings.StreamSettings, nil, receiverSettings.PortList); err != nil {
++		return err
++	}
++
++	return nil
++}
++
++func validateOutboundTransport(ts proto.Message, senderSettings *proxyman.SenderConfig) error {
++	if _, ok := ts.(*masque.ClientConfig); !ok && senderSettings.StreamSettings != nil && senderSettings.StreamSettings.ProtocolName == "masque" {
++		return errors.New("the masque transport can only be used by the masque outbound")
++	}
++
++	return validateXDrive(ts, senderSettings.StreamSettings, senderSettings.MultiplexSettings, nil)
++}
++
++func validateTLSFeatures(*TLSConfig) error { return nil }
+diff --git a/infra/conf/features_lite.go b/infra/conf/features_lite.go
+new file mode 100644
+index 0000000..f14fa28
+--- /dev/null
++++ b/infra/conf/features_lite.go
+@@ -0,0 +1,69 @@
++//go:build xray_lite
++
++package conf
++
++import (
++	"github.com/xtls/xray-core/app/proxyman"
++	"github.com/xtls/xray-core/common/errors"
++	"google.golang.org/protobuf/proto"
++)
++
++// Keep fields visible to JSON decoding so an unavailable feature is rejected,
++// rather than silently discarded by encoding/json.
++type unavailableConfig struct{}
++
++func (*unavailableConfig) UnmarshalJSON([]byte) error {
++	return errors.New("feature excluded from xray_lite; use the full Xray build")
++}
++func (*unavailableConfig) Build() (proto.Message, error) {
++	return nil, errors.New("feature excluded from xray_lite; use the full Xray build")
++}
++
++type APIConfig = unavailableConfig
++type DNSConfig = unavailableConfig
++type FakeDNSConfig = unavailableConfig
++type GeodataConfig = unavailableConfig
++type MetricsConfig = unavailableConfig
++type ObservatoryConfig = unavailableConfig
++type BurstObservatoryConfig = unavailableConfig
++type ReverseConfig = unavailableConfig
++
++var (
++	inboundConfigLoader = NewJSONConfigLoader(ConfigCreatorCache{
++		"tunnel":        func() interface{} { return new(DokodemoConfig) },
++		"dokodemo-door": func() interface{} { return new(DokodemoConfig) },
++		"socks":         func() interface{} { return new(SocksServerConfig) },
++	}, "protocol", "settings")
++	outboundConfigLoader = NewJSONConfigLoader(ConfigCreatorCache{
++		"block":     func() interface{} { return new(BlackholeConfig) },
++		"blackhole": func() interface{} { return new(BlackholeConfig) },
++		"direct":    func() interface{} { return new(FreedomConfig) },
++		"freedom":   func() interface{} { return new(FreedomConfig) },
++		"vless":     func() interface{} { return new(VLessOutboundConfig) },
++	}, "protocol", "settings")
++)
++
++func validateOutboundTransportSecurity(rawConfig interface{}, senderSettings *proxyman.SenderConfig) error {
++	if senderSettings.StreamSettings != nil && senderSettings.StreamSettings.GetSecurityType() != "" {
++		return nil
++	}
++	if c, ok := rawConfig.(*VLessOutboundConfig); ok {
++		if c.Encryption != "" && c.Encryption != "none" {
++			return nil
++		}
++		if requiresTransportSecurity(c.Address) {
++			return errors.New("vless without TLS or other encryption is prohibited unless the server address is a private IP or domain")
++		}
++	}
++	return nil
++}
++
++func validateInboundTransport(proto.Message, *proxyman.ReceiverConfig) error { return nil }
++func validateOutboundTransport(proto.Message, *proxyman.SenderConfig) error  { return nil }
++
++func validateTLSFeatures(c *TLSConfig) error {
++	if c.ECHServerKeys != "" || c.ECHConfigList != "" || c.ECHSocketSettings != nil {
++		return errors.New("ECH excluded from xray_lite")
++	}
++	return nil
++}
+diff --git a/infra/conf/geodata.go b/infra/conf/geodata.go
+index 7cd2a5e..14ad0f2 100644
+--- a/infra/conf/geodata.go
++++ b/infra/conf/geodata.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf
+ 
+ import (
+diff --git a/infra/conf/geodata_test.go b/infra/conf/geodata_test.go
+index 4ce47c8..85613f4 100644
+--- a/infra/conf/geodata_test.go
++++ b/infra/conf/geodata_test.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf_test
+ 
+ import (
+diff --git a/infra/conf/http.go b/infra/conf/http.go
+index 3e1482c..5bf0fdf 100644
+--- a/infra/conf/http.go
++++ b/infra/conf/http.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf
+ 
+ import (
+diff --git a/infra/conf/http_test.go b/infra/conf/http_test.go
+index 66cca39..06d1f23 100644
+--- a/infra/conf/http_test.go
++++ b/infra/conf/http_test.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf_test
+ 
+ import (
+diff --git a/infra/conf/hysteria.go b/infra/conf/hysteria.go
+index 0c9fc3c..35afec4 100644
+--- a/infra/conf/hysteria.go
++++ b/infra/conf/hysteria.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf
+ 
+ import (
+diff --git a/infra/conf/init.go b/infra/conf/init.go
+index 519d9fb..b4e83fb 100644
+--- a/infra/conf/init.go
++++ b/infra/conf/init.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf
+ 
+ func init() {
+diff --git a/infra/conf/lite_test.go b/infra/conf/lite_test.go
+new file mode 100644
+index 0000000..807bf3f
+--- /dev/null
++++ b/infra/conf/lite_test.go
+@@ -0,0 +1,98 @@
++//go:build xray_lite
++
++package conf_test
++
++import (
++	"encoding/json"
++	"os"
++	"strings"
++	"testing"
++
++	"github.com/xtls/xray-core/app/proxyman"
++	"github.com/xtls/xray-core/core"
++	"github.com/xtls/xray-core/infra/conf"
++	_ "github.com/xtls/xray-core/main/distro/all"
++	"github.com/xtls/xray-core/transport/internet"
++)
++
++func TestLitePasswallConfig(t *testing.T) {
++	t.Setenv("XRAY_LOCATION_ASSET", "")
++	data, err := os.ReadFile("testdata/lite-passwall.json")
++	if err != nil {
++		t.Fatal(err)
++	}
++	var c conf.Config
++	if err := json.Unmarshal(data, &c); err != nil {
++		t.Fatal(err)
++	}
++	built, err := c.Build()
++	if err != nil {
++		t.Fatal(err)
++	}
++	if len(built.Inbound) != 3 || len(built.Outbound) != 3 {
++		t.Fatal("missing handlers")
++	}
++	for i, want := range []internet.SocketConfig_TProxyMode{internet.SocketConfig_Redirect, internet.SocketConfig_TProxy} {
++		receiver, err := built.Inbound[i+1].ReceiverSettings.GetInstance()
++		if err != nil {
++			t.Fatal(err)
++		}
++		r := receiver.(*proxyman.ReceiverConfig)
++		if !r.ReceiveOriginalDestination || r.StreamSettings.SocketSettings.Tproxy != want {
++			t.Fatalf("original destination/socket mode lost: %v", r)
++		}
++	}
++	sender, err := built.Outbound[0].SenderSettings.GetInstance()
++	if err != nil {
++		t.Fatal(err)
++	}
++	s := sender.(*proxyman.SenderConfig)
++	if s.StreamSettings.ProtocolName != "tcp" || s.StreamSettings.SocketSettings.Mark != 255 || s.StreamSettings.SocketSettings.DomainStrategy != internet.DomainStrategy_USE_IP || !strings.HasSuffix(s.StreamSettings.SecurityType, "reality.Config") {
++		t.Fatalf("VLESS socket/transport settings lost: %v", s)
++	}
++	instance, err := core.New(built)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := instance.Close(); err != nil {
++		t.Fatal(err)
++	}
++	if os.Getenv("XRAY_LOCATION_ASSET") != "/tmp/etc/passwall_tmp/geodata" {
++		t.Fatal("config env lost")
++	}
++}
++
++func TestLiteRejectsUnavailableFeatures(t *testing.T) {
++	for _, input := range []string{
++		`{"dns":{}}`, `{"api":{}}`, `{"fakeDns":[]}`, `{"metrics":{}}`, `{"geodata":{}}`,
++		`{"observatory":{}}`, `{"burstObservatory":{}}`, `{"reverse":{}}`,
++		`{"inbounds":[{"protocol":"vless","port":12345}]}`,
++		`{"outbounds":[{"protocol":"vmess"}]}`,
++		`{"outbounds":[{"protocol":"trojan"}]}`,
++		`{"outbounds":[{"protocol":"wireguard"}]}`,
++		`{"outbounds":[{"protocol":"freedom","streamSettings":{"method":"grpc"}}]}`,
++		`{"outbounds":[{"protocol":"freedom","streamSettings":{"method":"xhttp"}}]}`,
++		`{"outbounds":[{"protocol":"freedom","streamSettings":{"wsSettings":{}}}]}`,
++		`{"outbounds":[{"protocol":"freedom","streamSettings":{"finalmask":{}}}]}`,
++		`{"outbounds":[{"protocol":"freedom","streamSettings":{"security":"tls","tlsSettings":{"echConfigList":"https://example.com/dns-query"}}}]}`,
++	} {
++		t.Run(input, func(t *testing.T) {
++			var c conf.Config
++			if err := json.Unmarshal([]byte(input), &c); err != nil {
++				return
++			}
++			if _, err := c.Build(); err == nil {
++				t.Fatal("unavailable feature accepted")
++			}
++		})
++	}
++	// Security validation must survive moving the full distribution's validators.
++	var c conf.Config
++	input := `{"outbounds":[{"protocol":"vless","settings":{"address":"example.com","port":443,"id":"11111111-1111-4111-8111-111111111111","encryption":"none"}}]}`
++	if err := json.Unmarshal([]byte(input), &c); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := c.Build(); err == nil || !strings.Contains(err.Error(), "without TLS") {
++		t.Fatalf("insecure public VLESS accepted: %v", err)
++	}
++}
+diff --git a/infra/conf/loopback.go b/infra/conf/loopback.go
+index ef30ddc..3ede3d2 100644
+--- a/infra/conf/loopback.go
++++ b/infra/conf/loopback.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf
+ 
+ import (
+diff --git a/infra/conf/masque.go b/infra/conf/masque.go
+index b128ee5..5cc0c04 100644
+--- a/infra/conf/masque.go
++++ b/infra/conf/masque.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf
+ 
+ import (
+diff --git a/infra/conf/masque_test.go b/infra/conf/masque_test.go
+index 803f397..dc5b87c 100644
+--- a/infra/conf/masque_test.go
++++ b/infra/conf/masque_test.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf_test
+ 
+ import (
+diff --git a/infra/conf/metrics.go b/infra/conf/metrics.go
+index 7596520..f5116b2 100644
+--- a/infra/conf/metrics.go
++++ b/infra/conf/metrics.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf
+ 
+ import (
+diff --git a/infra/conf/observatory.go b/infra/conf/observatory.go
+index d33a7b3..6b71b6c 100644
+--- a/infra/conf/observatory.go
++++ b/infra/conf/observatory.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf
+ 
+ import (
+diff --git a/infra/conf/reverse.go b/infra/conf/reverse.go
+index f44c999..47e3478 100644
+--- a/infra/conf/reverse.go
++++ b/infra/conf/reverse.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf
+ 
+ import (
+diff --git a/infra/conf/reverse_test.go b/infra/conf/reverse_test.go
+index 15da2b1..4ba35e2 100644
+--- a/infra/conf/reverse_test.go
++++ b/infra/conf/reverse_test.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf_test
+ 
+ import (
+diff --git a/infra/conf/serial/builder.go b/infra/conf/serial/builder.go
+index 3154fce..466a63f 100644
+--- a/infra/conf/serial/builder.go
++++ b/infra/conf/serial/builder.go
+@@ -42,6 +42,9 @@ func mergeConfigs(files []*core.ConfigSource) (*conf.Config, error) {
+ 			return nil, errors.New("failed to read config: ", file).Base(err)
+ 		}
+ 		decoder := ReaderDecoderByFormat[file.Format]
++		if decoder == nil {
++			return nil, errors.New("config format not included in this build: ", file.Format)
++		}
+ 		if file.Format == "json" && UseStrictJSON {
+ 			decoder = DecodeJSONConfigStrict
+ 		}
+@@ -72,8 +75,6 @@ var ReaderDecoderByFormat = make(map[string]readerDecoder)
+ 
+ func init() {
+ 	ReaderDecoderByFormat["json"] = DecodeJSONConfig
+-	ReaderDecoderByFormat["yaml"] = DecodeYAMLConfig
+-	ReaderDecoderByFormat["toml"] = DecodeTOMLConfig
+ 
+ 	core.ConfigBuilderForFiles = BuildConfig
+ 	core.ConfigMergedFormFiles = MergeConfigFromFiles
+diff --git a/infra/conf/serial/formats_full.go b/infra/conf/serial/formats_full.go
+new file mode 100644
+index 0000000..9f74fba
+--- /dev/null
++++ b/infra/conf/serial/formats_full.go
+@@ -0,0 +1,84 @@
++//go:build !xray_lite
++
++package serial
++
++import (
++	"bytes"
++	"encoding/json"
++	"github.com/ghodss/yaml"
++	"github.com/pelletier/go-toml"
++	"github.com/xtls/xray-core/common/errors"
++	"github.com/xtls/xray-core/core"
++	"github.com/xtls/xray-core/infra/conf"
++	"io"
++)
++
++func init() {
++	ReaderDecoderByFormat["yaml"] = DecodeYAMLConfig
++	ReaderDecoderByFormat["toml"] = DecodeTOMLConfig
++}
++
++// DecodeTOMLConfig reads from reader and decode the config into *conf.Config
++// using github.com/pelletier/go-toml and map to convert toml to json.
++func DecodeTOMLConfig(reader io.Reader) (*conf.Config, error) {
++	tomlFile, err := io.ReadAll(reader)
++	if err != nil {
++		return nil, errors.New("failed to read config file").Base(err)
++	}
++
++	configMap := make(map[string]interface{})
++	if err := toml.Unmarshal(tomlFile, &configMap); err != nil {
++		return nil, errors.New("failed to convert toml to map").Base(err)
++	}
++
++	jsonFile, err := json.Marshal(&configMap)
++	if err != nil {
++		return nil, errors.New("failed to convert map to json").Base(err)
++	}
++
++	return DecodeJSONConfig(bytes.NewReader(jsonFile))
++}
++
++func LoadTOMLConfig(reader io.Reader) (*core.Config, error) {
++	tomlConfig, err := DecodeTOMLConfig(reader)
++	if err != nil {
++		return nil, err
++	}
++
++	pbConfig, err := tomlConfig.Build()
++	if err != nil {
++		return nil, errors.New("failed to parse toml config").Base(err)
++	}
++
++	return pbConfig, nil
++}
++
++// DecodeYAMLConfig reads from reader and decode the config into *conf.Config
++// using github.com/ghodss/yaml to convert yaml to json.
++func DecodeYAMLConfig(reader io.Reader) (*conf.Config, error) {
++	yamlFile, err := io.ReadAll(reader)
++	if err != nil {
++		return nil, errors.New("failed to read config file").Base(err)
++	}
++
++	jsonFile, err := yaml.YAMLToJSON(yamlFile)
++	if err != nil {
++		return nil, errors.New("failed to convert yaml to json").Base(err)
++	}
++
++	return DecodeJSONConfig(bytes.NewReader(jsonFile))
++}
++
++func LoadYAMLConfig(reader io.Reader) (*core.Config, error) {
++	yamlConfig, err := DecodeYAMLConfig(reader)
++	if err != nil {
++		return nil, err
++	}
++
++	pbConfig, err := yamlConfig.Build()
++	if err != nil {
++		return nil, errors.New("failed to parse yaml config").Base(err)
++	}
++
++	return pbConfig, nil
++}
+diff --git a/infra/conf/serial/formats_full_test.go b/infra/conf/serial/formats_full_test.go
+new file mode 100644
+index 0000000..f46f2bc
+--- /dev/null
++++ b/infra/conf/serial/formats_full_test.go
+@@ -0,0 +1,30 @@
++//go:build !xray_lite
++
++package serial_test
++
++import (
++	"github.com/xtls/xray-core/core"
++	"github.com/xtls/xray-core/infra/conf/serial"
++	_ "github.com/xtls/xray-core/main/confloader/external"
++	"os"
++	"path/filepath"
++	"testing"
++)
++
++func TestFullBuildKeepsFormats(t *testing.T) {
++	for format, input := range map[string]string{"yaml": "outbounds:\n - protocol: freedom\n", "toml": "[[outbounds]]\nprotocol = \"freedom\"\n"} {
++		t.Run(format, func(t *testing.T) {
++			path := filepath.Join(t.TempDir(), "config."+format)
++			if err := os.WriteFile(path, []byte(input), 0600); err != nil {
++				t.Fatal(err)
++			}
++			config, err := serial.BuildConfig([]*core.ConfigSource{{Name: path, Format: format}})
++			if err != nil {
++				t.Fatal(err)
++			}
++			if len(config.Outbound) != 1 {
++				t.Fatal("missing freedom outbound")
++			}
++		})
++	}
++}
+diff --git a/infra/conf/serial/lite_test.go b/infra/conf/serial/lite_test.go
+new file mode 100644
+index 0000000..6f9fc87
+--- /dev/null
++++ b/infra/conf/serial/lite_test.go
+@@ -0,0 +1,28 @@
++//go:build xray_lite
++
++package serial_test
++
++import (
++	"github.com/xtls/xray-core/core"
++	"github.com/xtls/xray-core/infra/conf/serial"
++	_ "github.com/xtls/xray-core/main/confloader/external"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++)
++
++func TestLiteRejectsNonJSONFormats(t *testing.T) {
++	for _, format := range []string{"yaml", "toml"} {
++		t.Run(format, func(t *testing.T) {
++			path := filepath.Join(t.TempDir(), "config."+format)
++			if err := os.WriteFile(path, []byte("{}"), 0600); err != nil {
++				t.Fatal(err)
++			}
++			_, err := serial.BuildConfig([]*core.ConfigSource{{Name: path, Format: format}})
++			if err == nil || !strings.Contains(err.Error(), "config format not included") {
++				t.Fatalf("format %s: %v", format, err)
++			}
++		})
++	}
++}
+diff --git a/infra/conf/serial/loader.go b/infra/conf/serial/loader.go
+index d7d0d46..24873fa 100644
+--- a/infra/conf/serial/loader.go
++++ b/infra/conf/serial/loader.go
+@@ -5,8 +5,6 @@ import (
+ 	"encoding/json"
+ 	"io"
+ 
+-	"github.com/ghodss/yaml"
+-	"github.com/pelletier/go-toml"
+ 	"github.com/xtls/xray-core/common/errors"
+ 	"github.com/xtls/xray-core/core"
+ 	"github.com/xtls/xray-core/infra/conf"
+@@ -102,68 +100,3 @@ func LoadJSONConfig(reader io.Reader) (*core.Config, error) {
+ 
+ 	return pbConfig, nil
+ }
+-
+-// DecodeTOMLConfig reads from reader and decode the config into *conf.Config
+-// using github.com/pelletier/go-toml and map to convert toml to json.
+-func DecodeTOMLConfig(reader io.Reader) (*conf.Config, error) {
+-	tomlFile, err := io.ReadAll(reader)
+-	if err != nil {
+-		return nil, errors.New("failed to read config file").Base(err)
+-	}
+-
+-	configMap := make(map[string]interface{})
+-	if err := toml.Unmarshal(tomlFile, &configMap); err != nil {
+-		return nil, errors.New("failed to convert toml to map").Base(err)
+-	}
+-
+-	jsonFile, err := json.Marshal(&configMap)
+-	if err != nil {
+-		return nil, errors.New("failed to convert map to json").Base(err)
+-	}
+-
+-	return DecodeJSONConfig(bytes.NewReader(jsonFile))
+-}
+-
+-func LoadTOMLConfig(reader io.Reader) (*core.Config, error) {
+-	tomlConfig, err := DecodeTOMLConfig(reader)
+-	if err != nil {
+-		return nil, err
+-	}
+-
+-	pbConfig, err := tomlConfig.Build()
+-	if err != nil {
+-		return nil, errors.New("failed to parse toml config").Base(err)
+-	}
+-
+-	return pbConfig, nil
+-}
+-
+-// DecodeYAMLConfig reads from reader and decode the config into *conf.Config
+-// using github.com/ghodss/yaml to convert yaml to json.
+-func DecodeYAMLConfig(reader io.Reader) (*conf.Config, error) {
+-	yamlFile, err := io.ReadAll(reader)
+-	if err != nil {
+-		return nil, errors.New("failed to read config file").Base(err)
+-	}
+-
+-	jsonFile, err := yaml.YAMLToJSON(yamlFile)
+-	if err != nil {
+-		return nil, errors.New("failed to convert yaml to json").Base(err)
+-	}
+-
+-	return DecodeJSONConfig(bytes.NewReader(jsonFile))
+-}
+-
+-func LoadYAMLConfig(reader io.Reader) (*core.Config, error) {
+-	yamlConfig, err := DecodeYAMLConfig(reader)
+-	if err != nil {
+-		return nil, err
+-	}
+-
+-	pbConfig, err := yamlConfig.Build()
+-	if err != nil {
+-		return nil, errors.New("failed to parse yaml config").Base(err)
+-	}
+-
+-	return pbConfig, nil
+-}
+diff --git a/infra/conf/shadowsocks.go b/infra/conf/shadowsocks.go
+index 13862dd..04a4860 100644
+--- a/infra/conf/shadowsocks.go
++++ b/infra/conf/shadowsocks.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf
+ 
+ import (
+diff --git a/infra/conf/shadowsocks_test.go b/infra/conf/shadowsocks_test.go
+index a4ca671..a87d31f 100644
+--- a/infra/conf/shadowsocks_test.go
++++ b/infra/conf/shadowsocks_test.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf_test
+ 
+ import (
+diff --git a/infra/conf/testdata/lite-passwall.json b/infra/conf/testdata/lite-passwall.json
+new file mode 100644
+index 0000000..e644dff
+--- /dev/null
++++ b/infra/conf/testdata/lite-passwall.json
+@@ -0,0 +1,17 @@
++{
++  "log": {"loglevel": "error"},
++  "policy": {"levels": {"0": {"statsUserUplink": false, "statsUserDownlink": false}}},
++  "inbounds": [
++    {"port": 23456, "protocol": "socks", "sniffing": {"enabled": false}, "settings": {"udp": true, "auth": "noauth"}, "listen": "0.0.0.0", "tag": "socks-in"},
++    {"port": 1041, "protocol": "tunnel", "streamSettings": {"sockopt": {"tproxy": "redirect"}}, "sniffing": {"enabled": false}, "settings": {"allowedNetwork": "tcp", "followRedirect": true}, "tag": "tcp_redir"},
++    {"port": 1041, "protocol": "tunnel", "streamSettings": {"sockopt": {"tproxy": "tproxy"}}, "sniffing": {"enabled": false}, "settings": {"allowedNetwork": "udp", "followRedirect": true}, "tag": "udp_redir"}
++  ],
++  "outbounds": [
++    {"mux": {"enabled": false}, "settings": {"flow": "xtls-rprx-vision", "encryption": "none", "id": "11111111-1111-4111-8111-111111111111", "port": 443, "address": "example.com", "level": 0}, "streamSettings": {"method": "raw", "sockopt": {"domainStrategy": "UseIP", "mark": 255}, "realitySettings": {"publicKey": "J452k2kvBdGC2BAUF9uxMGdxxC6DEqu2C2lOiisVJBc", "fingerprint": "chrome", "spiderX": "/", "serverName": "example.com", "shortId": "abcd"}, "security": "reality"}, "protocol": "vless", "tag": "aS5ilRJG:vps"},
++    {"streamSettings": {"sockopt": {"mark": 255, "domainStrategy": "UseIP"}}, "settings": {"finalRules": [{"action": "allow"}]}, "protocol": "freedom", "tag": "direct"},
++    {"protocol": "blackhole", "tag": "blackhole"}
++  ],
++  "version": {"min": "26.7.11"},
++  "env": {"XRAY_LOCATION_ASSET": "/tmp/etc/passwall_tmp/geodata"},
++  "routing": {"rules": [{"network": "tcp,udp", "ruleTag": "default", "outboundTag": "aS5ilRJG:vps"}], "domainStrategy": "AsIs", "domainMatcher": "hybrid"}
++}
+diff --git a/infra/conf/transport_finalmask.go b/infra/conf/transport_finalmask.go
+index 6f32923..8d10361 100644
+--- a/infra/conf/transport_finalmask.go
++++ b/infra/conf/transport_finalmask.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf
+ 
+ import (
+diff --git a/infra/conf/transport_finalmask_filter_test.go b/infra/conf/transport_finalmask_filter_test.go
+index 63618cf..fa20b6c 100644
+--- a/infra/conf/transport_finalmask_filter_test.go
++++ b/infra/conf/transport_finalmask_filter_test.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf_test
+ 
+ import (
+diff --git a/infra/conf/transport_finalmask_noise_test.go b/infra/conf/transport_finalmask_noise_test.go
+index d0c72d8..c0fce70 100644
+--- a/infra/conf/transport_finalmask_noise_test.go
++++ b/infra/conf/transport_finalmask_noise_test.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf
+ 
+ import (
+diff --git a/infra/conf/transport_finalmask_xmc_test.go b/infra/conf/transport_finalmask_xmc_test.go
+index 5d42574..b35e656 100644
+--- a/infra/conf/transport_finalmask_xmc_test.go
++++ b/infra/conf/transport_finalmask_xmc_test.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf
+ 
+ import (
+diff --git a/infra/conf/transport_internet.go b/infra/conf/transport_internet.go
+index efee036..ffd8339 100644
+--- a/infra/conf/transport_internet.go
++++ b/infra/conf/transport_internet.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf
+ 
+ import (
+diff --git a/infra/conf/transport_internet_lite.go b/infra/conf/transport_internet_lite.go
+new file mode 100644
+index 0000000..e028567
+--- /dev/null
++++ b/infra/conf/transport_internet_lite.go
+@@ -0,0 +1,106 @@
++//go:build xray_lite
++
++package conf
++
++import (
++	"github.com/xtls/xray-core/common/errors"
++	"github.com/xtls/xray-core/common/serial"
++	"github.com/xtls/xray-core/transport/internet"
++	"google.golang.org/protobuf/proto"
++	"strings"
++)
++
++type TransportProtocol string
++
++func (p TransportProtocol) Build() (string, error) {
++	switch strings.ToLower(string(p)) {
++	case "raw", "tcp":
++		return "tcp", nil
++	default:
++		return "", errors.New("transport excluded from xray_lite: ", p)
++	}
++}
++
++type StreamConfig struct {
++	Address             *Address           `json:"address"`
++	Port                uint16             `json:"port"`
++	Method              *TransportProtocol `json:"method"`
++	Network             *TransportProtocol `json:"network"`
++	Security            string             `json:"security"`
++	TLSSettings         *TLSConfig         `json:"tlsSettings"`
++	REALITYSettings     *REALITYConfig     `json:"realitySettings"`
++	RAWSettings         *TCPConfig         `json:"rawSettings"`
++	TCPSettings         *TCPConfig         `json:"tcpSettings"`
++	SocketSettings      *SocketConfig      `json:"sockopt"`
++	FinalMask           *unavailableConfig `json:"finalmask"`
++	XHTTPSettings       *unavailableConfig `json:"xhttpSettings"`
++	SplitHTTPSettings   *unavailableConfig `json:"splithttpSettings"`
++	KCPSettings         *unavailableConfig `json:"kcpSettings"`
++	GRPCSettings        *unavailableConfig `json:"grpcSettings"`
++	WSSettings          *unavailableConfig `json:"wsSettings"`
++	HTTPUPGRADESettings *unavailableConfig `json:"httpupgradeSettings"`
++	HysteriaSettings    *unavailableConfig `json:"hysteriaSettings"`
++	MASQUESettings      *unavailableConfig `json:"masqueSettings"`
++	XDRIVESettings      *unavailableConfig `json:"xdriveSettings"`
++}
++
++func (c *StreamConfig) Build() (*internet.StreamConfig, error) {
++	config := &internet.StreamConfig{Port: uint32(c.Port), ProtocolName: "tcp"}
++	if c.Address != nil {
++		config.Address = c.Address.Build()
++	}
++	if c.Method != nil {
++		c.Network = c.Method
++	}
++	if c.Network != nil {
++		name, err := c.Network.Build()
++		if err != nil {
++			return nil, err
++		}
++		config.ProtocolName = name
++	}
++	var security proto.Message
++	var err error
++	switch strings.ToLower(c.Security) {
++	case "", "none":
++	case "tls":
++		settings := c.TLSSettings
++		if settings == nil {
++			settings = &TLSConfig{}
++		}
++		security, err = settings.Build()
++	case "reality":
++		if c.REALITYSettings == nil {
++			return nil, errors.New("REALITY: empty realitySettings")
++		}
++		security, err = c.REALITYSettings.Build()
++	default:
++		return nil, errors.New("security excluded from xray_lite: ", c.Security)
++	}
++	if err != nil {
++		return nil, err
++	}
++	if security != nil {
++		tm := serial.ToTypedMessage(security)
++		config.SecuritySettings = append(config.SecuritySettings, tm)
++		config.SecurityType = tm.Type
++	}
++	if c.RAWSettings != nil {
++		c.TCPSettings = c.RAWSettings
++	}
++	if c.TCPSettings != nil {
++		ts, err := c.TCPSettings.Build()
++		if err != nil {
++			return nil, err
++		}
++		config.TransportSettings = append(config.TransportSettings, &internet.TransportConfig{ProtocolName: "tcp", Settings: serial.ToTypedMessage(ts)})
++	}
++	if c.SocketSettings != nil {
++		ss, err := c.SocketSettings.Build()
++		if err != nil {
++			return nil, err
++		}
++		config.SocketSettings = ss
++	}
++	return config, nil
++}
+diff --git a/infra/conf/transport_method.go b/infra/conf/transport_method.go
+index 826d074..73ab8b5 100644
+--- a/infra/conf/transport_method.go
++++ b/infra/conf/transport_method.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf
+ 
+ import (
+@@ -11,258 +13,24 @@ import (
+ 	"math/big"
+ 	"net/netip"
+ 	"net/url"
+-	"sort"
+ 	"strconv"
+ 	"strings"
+ 
+ 	"github.com/xtls/xray-core/common"
+ 	"github.com/xtls/xray-core/common/errors"
+-	"github.com/xtls/xray-core/common/platform/filesystem"
+-	"github.com/xtls/xray-core/common/serial"
+-	"github.com/xtls/xray-core/common/utils"
+ 	"github.com/xtls/xray-core/transport/internet"
+ 	"github.com/xtls/xray-core/transport/internet/grpc"
+-	"github.com/xtls/xray-core/transport/internet/headers/http"
+-	"github.com/xtls/xray-core/transport/internet/headers/noop"
+ 	"github.com/xtls/xray-core/transport/internet/httpupgrade"
+ 	"github.com/xtls/xray-core/transport/internet/hysteria"
+ 	"github.com/xtls/xray-core/transport/internet/kcp"
+ 	"github.com/xtls/xray-core/transport/internet/masque"
+ 	"github.com/xtls/xray-core/transport/internet/splithttp"
+-	"github.com/xtls/xray-core/transport/internet/tcp"
+ 	"github.com/xtls/xray-core/transport/internet/websocket"
+ 	"github.com/xtls/xray-core/transport/internet/xdrive"
+ 	"golang.org/x/net/http/httpguts"
+ 	"google.golang.org/protobuf/proto"
+ )
+ 
+-type NoOpConnectionAuthenticator struct{}
+-
+-func (NoOpConnectionAuthenticator) Build() (proto.Message, error) {
+-	return new(noop.ConnectionConfig), nil
+-}
+-
+-type AuthenticatorRequest struct {
+-	Version string                 `json:"version"`
+-	Method  string                 `json:"method"`
+-	Path    StringList             `json:"path"`
+-	Headers map[string]*StringList `json:"headers"`
+-}
+-
+-func sortMapKeys(m map[string]*StringList) []string {
+-	var keys []string
+-	for key := range m {
+-		keys = append(keys, key)
+-	}
+-	sort.Strings(keys)
+-	return keys
+-}
+-
+-func (v *AuthenticatorRequest) Build() (*http.RequestConfig, error) {
+-	config := &http.RequestConfig{
+-		Uri: []string{"/"},
+-		Header: []*http.Header{
+-			{
+-				Name:  "Host",
+-				Value: []string{"www.baidu.com", "www.bing.com"},
+-			},
+-			{
+-				Name:  "User-Agent",
+-				Value: []string{utils.ChromeUA},
+-			},
+-			{
+-				Name:  "Sec-CH-UA",
+-				Value: []string{utils.ChromeUACH},
+-			},
+-			{
+-				Name:  "Sec-CH-UA-Mobile",
+-				Value: []string{"?0"},
+-			},
+-			{
+-				Name:  "Sec-CH-UA-Platform",
+-				Value: []string{"Windows"},
+-			},
+-			{
+-				Name:  "Sec-Fetch-Mode",
+-				Value: []string{"no-cors", "cors", "same-origin"},
+-			},
+-			{
+-				Name:  "Sec-Fetch-Dest",
+-				Value: []string{"empty"},
+-			},
+-			{
+-				Name:  "Sec-Fetch-Site",
+-				Value: []string{"none"},
+-			},
+-			{
+-				Name:  "Sec-Fetch-User",
+-				Value: []string{"?1"},
+-			},
+-			{
+-				Name:  "Accept-Encoding",
+-				Value: []string{"gzip, deflate"},
+-			},
+-			{
+-				Name:  "Connection",
+-				Value: []string{"keep-alive"},
+-			},
+-			{
+-				Name:  "Pragma",
+-				Value: []string{"no-cache"},
+-			},
+-		},
+-	}
+-
+-	if len(v.Version) > 0 {
+-		config.Version = &http.Version{Value: v.Version}
+-	}
+-
+-	if len(v.Method) > 0 {
+-		config.Method = &http.Method{Value: v.Method}
+-	}
+-
+-	if len(v.Path) > 0 {
+-		config.Uri = append([]string(nil), v.Path...)
+-	}
+-
+-	if len(v.Headers) > 0 {
+-		config.Header = make([]*http.Header, 0, len(v.Headers))
+-		headerNames := sortMapKeys(v.Headers)
+-		for _, key := range headerNames {
+-			value := v.Headers[key]
+-			if value == nil {
+-				return nil, errors.New("empty HTTP header value: " + key)
+-			}
+-			config.Header = append(config.Header, &http.Header{
+-				Name:  key,
+-				Value: append([]string(nil), (*value)...),
+-			})
+-		}
+-	}
+-
+-	return config, nil
+-}
+-
+-type AuthenticatorResponse struct {
+-	Version string                 `json:"version"`
+-	Status  string                 `json:"status"`
+-	Reason  string                 `json:"reason"`
+-	Headers map[string]*StringList `json:"headers"`
+-}
+-
+-func (v *AuthenticatorResponse) Build() (*http.ResponseConfig, error) {
+-	config := &http.ResponseConfig{
+-		Header: []*http.Header{
+-			{
+-				Name:  "Content-Type",
+-				Value: []string{"application/octet-stream", "video/mpeg"},
+-			},
+-			{
+-				Name:  "Transfer-Encoding",
+-				Value: []string{"chunked"},
+-			},
+-			{
+-				Name:  "Connection",
+-				Value: []string{"keep-alive"},
+-			},
+-			{
+-				Name:  "Pragma",
+-				Value: []string{"no-cache"},
+-			},
+-			{
+-				Name:  "Cache-Control",
+-				Value: []string{"private", "no-cache"},
+-			},
+-		},
+-	}
+-
+-	if len(v.Version) > 0 {
+-		config.Version = &http.Version{Value: v.Version}
+-	}
+-
+-	if len(v.Status) > 0 || len(v.Reason) > 0 {
+-		config.Status = &http.Status{
+-			Code:   "200",
+-			Reason: "OK",
+-		}
+-		if len(v.Status) > 0 {
+-			config.Status.Code = v.Status
+-		}
+-		if len(v.Reason) > 0 {
+-			config.Status.Reason = v.Reason
+-		}
+-	}
+-
+-	if len(v.Headers) > 0 {
+-		config.Header = make([]*http.Header, 0, len(v.Headers))
+-		headerNames := sortMapKeys(v.Headers)
+-		for _, key := range headerNames {
+-			value := v.Headers[key]
+-			if value == nil {
+-				return nil, errors.New("empty HTTP header value: " + key)
+-			}
+-			config.Header = append(config.Header, &http.Header{
+-				Name:  key,
+-				Value: append([]string(nil), (*value)...),
+-			})
+-		}
+-	}
+-
+-	return config, nil
+-}
+-
+-type Authenticator struct {
+-	Request  AuthenticatorRequest  `json:"request"`
+-	Response AuthenticatorResponse `json:"response"`
+-}
+-
+-func (v *Authenticator) Build() (proto.Message, error) {
+-	config := new(http.Config)
+-	requestConfig, err := v.Request.Build()
+-	if err != nil {
+-		return nil, err
+-	}
+-	config.Request = requestConfig
+-
+-	responseConfig, err := v.Response.Build()
+-	if err != nil {
+-		return nil, err
+-	}
+-	config.Response = responseConfig
+-
+-	return config, nil
+-}
+-
+-var tcpHeaderLoader = NewJSONConfigLoader(ConfigCreatorCache{
+-	"none": func() interface{} { return new(NoOpConnectionAuthenticator) },
+-	"http": func() interface{} { return new(Authenticator) },
+-}, "type", "")
+-
+-type TCPConfig struct {
+-	HeaderConfig        json.RawMessage `json:"header"`
+-	AcceptProxyProtocol bool            `json:"acceptProxyProtocol"`
+-}
+-
+-// Build implements Buildable.
+-func (c *TCPConfig) Build() (proto.Message, error) {
+-	config := new(tcp.Config)
+-	if len(c.HeaderConfig) > 0 {
+-		headerConfig, _, err := tcpHeaderLoader.Load(c.HeaderConfig)
+-		if err != nil {
+-			return nil, errors.New("invalid TCP header config").Base(err)
+-		}
+-		ts, err := headerConfig.(Buildable).Build()
+-		if err != nil {
+-			return nil, errors.New("invalid TCP header config").Base(err)
+-		}
+-		config.HeaderSettings = serial.ToTypedMessage(ts)
+-	}
+-	if c.AcceptProxyProtocol {
+-		config.AcceptProxyProtocol = c.AcceptProxyProtocol
+-	}
+-	return config, nil
+-}
+-
+ type SplitHTTPConfig struct {
+ 	Host                 string            `json:"host"`
+ 	Path                 string            `json:"path"`
+@@ -976,16 +744,6 @@ func parseWarpPrivateKey(s string) ([]byte, error) {
+ 	return x509.MarshalPKCS8PrivateKey(ecKey)
+ }
+ 
+-func readFileOrString(f string, s []string) ([]byte, error) {
+-	if len(f) > 0 {
+-		return filesystem.ReadCert(f)
+-	}
+-	if len(s) > 0 {
+-		return []byte(strings.Join(s, "\n")), nil
+-	}
+-	return nil, errors.New("both file and bytes are empty.")
+-}
+-
+ type XDriveConfig struct {
+ 	RemoteFolder      string          `json:"remoteFolder"`
+ 	Service           string          `json:"service"`
+diff --git a/infra/conf/transport_raw.go b/infra/conf/transport_raw.go
+new file mode 100644
+index 0000000..7416c60
+--- /dev/null
++++ b/infra/conf/transport_raw.go
+@@ -0,0 +1,252 @@
++package conf
++
++import (
++	"encoding/json"
++	"github.com/xtls/xray-core/common/errors"
++	"github.com/xtls/xray-core/common/platform/filesystem"
++	"github.com/xtls/xray-core/common/serial"
++	"github.com/xtls/xray-core/common/utils"
++	"github.com/xtls/xray-core/transport/internet/headers/http"
++	"github.com/xtls/xray-core/transport/internet/headers/noop"
++	"github.com/xtls/xray-core/transport/internet/tcp"
++	"google.golang.org/protobuf/proto"
++	"sort"
++	"strings"
++)
++
++type NoOpConnectionAuthenticator struct{}
++
++func (NoOpConnectionAuthenticator) Build() (proto.Message, error) {
++	return new(noop.ConnectionConfig), nil
++}
++
++type AuthenticatorRequest struct {
++	Version string                 `json:"version"`
++	Method  string                 `json:"method"`
++	Path    StringList             `json:"path"`
++	Headers map[string]*StringList `json:"headers"`
++}
++
++func sortMapKeys(m map[string]*StringList) []string {
++	var keys []string
++	for key := range m {
++		keys = append(keys, key)
++	}
++	sort.Strings(keys)
++	return keys
++}
++
++func (v *AuthenticatorRequest) Build() (*http.RequestConfig, error) {
++	config := &http.RequestConfig{
++		Uri: []string{"/"},
++		Header: []*http.Header{
++			{
++				Name:  "Host",
++				Value: []string{"www.baidu.com", "www.bing.com"},
++			},
++			{
++				Name:  "User-Agent",
++				Value: []string{utils.ChromeUA},
++			},
++			{
++				Name:  "Sec-CH-UA",
++				Value: []string{utils.ChromeUACH},
++			},
++			{
++				Name:  "Sec-CH-UA-Mobile",
++				Value: []string{"?0"},
++			},
++			{
++				Name:  "Sec-CH-UA-Platform",
++				Value: []string{"Windows"},
++			},
++			{
++				Name:  "Sec-Fetch-Mode",
++				Value: []string{"no-cors", "cors", "same-origin"},
++			},
++			{
++				Name:  "Sec-Fetch-Dest",
++				Value: []string{"empty"},
++			},
++			{
++				Name:  "Sec-Fetch-Site",
++				Value: []string{"none"},
++			},
++			{
++				Name:  "Sec-Fetch-User",
++				Value: []string{"?1"},
++			},
++			{
++				Name:  "Accept-Encoding",
++				Value: []string{"gzip, deflate"},
++			},
++			{
++				Name:  "Connection",
++				Value: []string{"keep-alive"},
++			},
++			{
++				Name:  "Pragma",
++				Value: []string{"no-cache"},
++			},
++		},
++	}
++
++	if len(v.Version) > 0 {
++		config.Version = &http.Version{Value: v.Version}
++	}
++
++	if len(v.Method) > 0 {
++		config.Method = &http.Method{Value: v.Method}
++	}
++
++	if len(v.Path) > 0 {
++		config.Uri = append([]string(nil), v.Path...)
++	}
++
++	if len(v.Headers) > 0 {
++		config.Header = make([]*http.Header, 0, len(v.Headers))
++		headerNames := sortMapKeys(v.Headers)
++		for _, key := range headerNames {
++			value := v.Headers[key]
++			if value == nil {
++				return nil, errors.New("empty HTTP header value: " + key)
++			}
++			config.Header = append(config.Header, &http.Header{
++				Name:  key,
++				Value: append([]string(nil), (*value)...),
++			})
++		}
++	}
++
++	return config, nil
++}
++
++type AuthenticatorResponse struct {
++	Version string                 `json:"version"`
++	Status  string                 `json:"status"`
++	Reason  string                 `json:"reason"`
++	Headers map[string]*StringList `json:"headers"`
++}
++
++func (v *AuthenticatorResponse) Build() (*http.ResponseConfig, error) {
++	config := &http.ResponseConfig{
++		Header: []*http.Header{
++			{
++				Name:  "Content-Type",
++				Value: []string{"application/octet-stream", "video/mpeg"},
++			},
++			{
++				Name:  "Transfer-Encoding",
++				Value: []string{"chunked"},
++			},
++			{
++				Name:  "Connection",
++				Value: []string{"keep-alive"},
++			},
++			{
++				Name:  "Pragma",
++				Value: []string{"no-cache"},
++			},
++			{
++				Name:  "Cache-Control",
++				Value: []string{"private", "no-cache"},
++			},
++		},
++	}
++
++	if len(v.Version) > 0 {
++		config.Version = &http.Version{Value: v.Version}
++	}
++
++	if len(v.Status) > 0 || len(v.Reason) > 0 {
++		config.Status = &http.Status{
++			Code:   "200",
++			Reason: "OK",
++		}
++		if len(v.Status) > 0 {
++			config.Status.Code = v.Status
++		}
++		if len(v.Reason) > 0 {
++			config.Status.Reason = v.Reason
++		}
++	}
++
++	if len(v.Headers) > 0 {
++		config.Header = make([]*http.Header, 0, len(v.Headers))
++		headerNames := sortMapKeys(v.Headers)
++		for _, key := range headerNames {
++			value := v.Headers[key]
++			if value == nil {
++				return nil, errors.New("empty HTTP header value: " + key)
++			}
++			config.Header = append(config.Header, &http.Header{
++				Name:  key,
++				Value: append([]string(nil), (*value)...),
++			})
++		}
++	}
++
++	return config, nil
++}
++
++type Authenticator struct {
++	Request  AuthenticatorRequest  `json:"request"`
++	Response AuthenticatorResponse `json:"response"`
++}
++
++func (v *Authenticator) Build() (proto.Message, error) {
++	config := new(http.Config)
++	requestConfig, err := v.Request.Build()
++	if err != nil {
++		return nil, err
++	}
++	config.Request = requestConfig
++
++	responseConfig, err := v.Response.Build()
++	if err != nil {
++		return nil, err
++	}
++	config.Response = responseConfig
++
++	return config, nil
++}
++
++var tcpHeaderLoader = NewJSONConfigLoader(ConfigCreatorCache{
++	"none": func() interface{} { return new(NoOpConnectionAuthenticator) },
++	"http": func() interface{} { return new(Authenticator) },
++}, "type", "")
++
++type TCPConfig struct {
++	HeaderConfig        json.RawMessage `json:"header"`
++	AcceptProxyProtocol bool            `json:"acceptProxyProtocol"`
++}
++
++// Build implements Buildable.
++func (c *TCPConfig) Build() (proto.Message, error) {
++	config := new(tcp.Config)
++	if len(c.HeaderConfig) > 0 {
++		headerConfig, _, err := tcpHeaderLoader.Load(c.HeaderConfig)
++		if err != nil {
++			return nil, errors.New("invalid TCP header config").Base(err)
++		}
++		ts, err := headerConfig.(Buildable).Build()
++		if err != nil {
++			return nil, errors.New("invalid TCP header config").Base(err)
++		}
++		config.HeaderSettings = serial.ToTypedMessage(ts)
++	}
++	if c.AcceptProxyProtocol {
++		config.AcceptProxyProtocol = c.AcceptProxyProtocol
++	}
++	return config, nil
++}
++
++func readFileOrString(f string, s []string) ([]byte, error) {
++	if len(f) > 0 {
++		return filesystem.ReadCert(f)
++	}
++	if len(s) > 0 {
++		return []byte(strings.Join(s, "\n")), nil
++	}
++	return nil, errors.New("both file and bytes are empty.")
++}
+diff --git a/infra/conf/transport_security.go b/infra/conf/transport_security.go
+index 00e5387..ff3981e 100644
+--- a/infra/conf/transport_security.go
++++ b/infra/conf/transport_security.go
+@@ -321,6 +321,9 @@ type TLSConfig struct {
+ 
+ // Build implements Buildable.
+ func (c *TLSConfig) Build() (proto.Message, error) {
++	if err := validateTLSFeatures(c); err != nil {
++		return nil, err
++	}
+ 	config := new(tls.Config)
+ 	config.Certificate = make([]*tls.Certificate, len(c.Certs))
+ 	for idx, certConf := range c.Certs {
+diff --git a/infra/conf/transport_test.go b/infra/conf/transport_test.go
+index 44ce2af..587b459 100644
+--- a/infra/conf/transport_test.go
++++ b/infra/conf/transport_test.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf_test
+ 
+ import (
+diff --git a/infra/conf/trojan.go b/infra/conf/trojan.go
+index 0848137..912b9b3 100644
+--- a/infra/conf/trojan.go
++++ b/infra/conf/trojan.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf
+ 
+ import (
+diff --git a/infra/conf/tun.go b/infra/conf/tun.go
+index 163a895..58052e8 100644
+--- a/infra/conf/tun.go
++++ b/infra/conf/tun.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf
+ 
+ import (
+diff --git a/infra/conf/tun_test.go b/infra/conf/tun_test.go
+index 2516207..d98574c 100644
+--- a/infra/conf/tun_test.go
++++ b/infra/conf/tun_test.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf_test
+ 
+ import (
+diff --git a/infra/conf/vless.go b/infra/conf/vless.go
+index 1e435d9..89b38b6 100644
+--- a/infra/conf/vless.go
++++ b/infra/conf/vless.go
+@@ -3,217 +3,17 @@ package conf
+ import (
+ 	"encoding/base64"
+ 	"encoding/json"
+-	"path/filepath"
+-	"runtime"
+-	"strconv"
+ 	"strings"
+-	"syscall"
+ 
+ 	"github.com/xtls/xray-core/common/errors"
+-	"github.com/xtls/xray-core/common/net"
+ 	"github.com/xtls/xray-core/common/protocol"
+ 	"github.com/xtls/xray-core/common/serial"
+-	"github.com/xtls/xray-core/common/task"
+ 	"github.com/xtls/xray-core/common/uuid"
+ 	"github.com/xtls/xray-core/proxy/vless"
+-	"github.com/xtls/xray-core/proxy/vless/inbound"
+ 	"github.com/xtls/xray-core/proxy/vless/outbound"
+ 	"google.golang.org/protobuf/proto"
+ )
+ 
+-type VLessInboundFallback struct {
+-	Name string          `json:"name"`
+-	Alpn string          `json:"alpn"`
+-	Path string          `json:"path"`
+-	Type string          `json:"type"`
+-	Dest json.RawMessage `json:"dest"`
+-	Xver uint64          `json:"xver"`
+-}
+-
+-type VLessInboundConfig struct {
+-	Users      []json.RawMessage       `json:"users"`
+-	Clients    []json.RawMessage       `json:"clients"`
+-	Decryption string                  `json:"decryption"`
+-	Fallbacks  []*VLessInboundFallback `json:"fallbacks"`
+-	Flow       string                  `json:"flow"`
+-	Testseed   []uint32                `json:"testseed"`
+-}
+-
+-// Build implements Buildable
+-func (c *VLessInboundConfig) Build() (proto.Message, error) {
+-	config := new(inbound.Config)
+-
+-	if c.Clients != nil {
+-		c.Users = c.Clients
+-	}
+-	config.Users = make([]*protocol.User, len(c.Users))
+-	switch c.Flow {
+-	case vless.XRV, "":
+-	default:
+-		return nil, errors.New(`VLESS "settings.flow" doesn't support "` + c.Flow + `" in this version`)
+-	}
+-	processClient := func(idx int) error {
+-		rawUser := c.Users[idx]
+-		user := new(protocol.User)
+-		if err := json.Unmarshal(rawUser, user); err != nil {
+-			return errors.New(`VLESS users: invalid user`).Base(err)
+-		}
+-		account := new(vless.Account)
+-		if err := json.Unmarshal(rawUser, account); err != nil {
+-			return errors.New(`VLESS users: invalid user`).Base(err)
+-		}
+-
+-		u, err := uuid.ParseString(account.Id)
+-		if err != nil {
+-			return err
+-		}
+-		account.Id = u.String()
+-
+-		switch account.Flow {
+-		case "":
+-			account.Flow = c.Flow
+-		case vless.XRV:
+-		default:
+-			return errors.New(`VLESS users: "flow" doesn't support "` + account.Flow + `" in this version`)
+-		}
+-
+-		if len(account.Testseed) < 4 {
+-			account.Testseed = c.Testseed
+-		}
+-
+-		if account.Encryption != "" {
+-			return errors.New(`VLESS users: "encryption" should not be in inbound settings`)
+-		}
+-
+-		if account.Reverse != nil {
+-			if account.Reverse.Tag == "" {
+-				return errors.New(`VLESS users: "tag" can't be empty for "reverse"`)
+-			}
+-			if account.Reverse.Sniffing != nil { // may not be reached: error json unmarshal
+-				return errors.New(`VLESS users: inbound's "reverse" can't have "sniffing"`)
+-			}
+-		}
+-
+-		user.Account = serial.ToTypedMessage(account)
+-		config.Users[idx] = user
+-		return nil
+-	}
+-
+-	if err := task.ParallelForN(len(c.Users), processClient); err != nil {
+-		return nil, err
+-	}
+-
+-	config.Decryption = c.Decryption
+-	if !func() bool {
+-		s := strings.Split(config.Decryption, ".")
+-		if len(s) < 4 || s[0] != "mlkem768x25519plus" {
+-			return false
+-		}
+-		switch s[1] {
+-		case "native":
+-		case "xorpub":
+-			config.XorMode = 1
+-		case "random":
+-			config.XorMode = 2
+-		default:
+-			return false
+-		}
+-		t := strings.SplitN(strings.TrimSuffix(s[2], "s"), "-", 2)
+-		i, err := strconv.Atoi(t[0])
+-		if err != nil {
+-			return false
+-		}
+-		config.SecondsFrom = int64(i)
+-		if len(t) == 2 {
+-			i, err := strconv.Atoi(t[1])
+-			if err != nil {
+-				return false
+-			}
+-			config.SecondsTo = int64(i)
+-		}
+-		padding := 0
+-		for _, r := range s[3:] {
+-			if len(r) < 20 {
+-				padding += len(r) + 1
+-				continue
+-			}
+-			if b, _ := base64.RawURLEncoding.DecodeString(r); len(b) != 32 && len(b) != 64 {
+-				return false
+-			}
+-		}
+-		config.Decryption = config.Decryption[27+len(s[2]):]
+-		if padding > 0 {
+-			config.Padding = config.Decryption[:padding-1]
+-			config.Decryption = config.Decryption[padding:]
+-		}
+-		return true
+-	}() && config.Decryption != "none" {
+-		if config.Decryption == "" {
+-			return nil, errors.New(`VLESS settings: please add/set "decryption":"none" to every settings`)
+-		}
+-		return nil, errors.New(`VLESS settings: unsupported "decryption": ` + config.Decryption)
+-	}
+-
+-	if config.Decryption != "none" && c.Fallbacks != nil {
+-		return nil, errors.New(`VLESS settings: "fallbacks" can not be used together with "decryption"`)
+-	}
+-
+-	for _, fb := range c.Fallbacks {
+-		var i uint16
+-		var s string
+-		if err := json.Unmarshal(fb.Dest, &i); err == nil {
+-			s = strconv.Itoa(int(i))
+-		} else {
+-			_ = json.Unmarshal(fb.Dest, &s)
+-		}
+-		config.Fallbacks = append(config.Fallbacks, &inbound.Fallback{
+-			Name: fb.Name,
+-			Alpn: fb.Alpn,
+-			Path: fb.Path,
+-			Type: fb.Type,
+-			Dest: s,
+-			Xver: fb.Xver,
+-		})
+-	}
+-	for _, fb := range config.Fallbacks {
+-		/*
+-			if fb.Alpn == "h2" && fb.Path != "" {
+-				return nil, errors.New(`VLESS fallbacks: "alpn":"h2" doesn't support "path"`)
+-			}
+-		*/
+-		if fb.Path != "" && fb.Path[0] != '/' {
+-			return nil, errors.New(`VLESS fallbacks: "path" must be empty or start with "/"`)
+-		}
+-		if fb.Type == "" && fb.Dest != "" {
+-			if fb.Dest == "serve-ws-none" {
+-				fb.Type = "serve"
+-			} else if filepath.IsAbs(fb.Dest) || fb.Dest[0] == '@' {
+-				fb.Type = "unix"
+-				if strings.HasPrefix(fb.Dest, "@@") && (runtime.GOOS == "linux" || runtime.GOOS == "android") {
+-					fullAddr := make([]byte, len(syscall.RawSockaddrUnix{}.Path)) // may need padding to work with haproxy
+-					copy(fullAddr, fb.Dest[1:])
+-					fb.Dest = string(fullAddr)
+-				}
+-			} else {
+-				if _, err := strconv.Atoi(fb.Dest); err == nil {
+-					fb.Dest = "localhost:" + fb.Dest
+-				}
+-				if _, _, err := net.SplitHostPort(fb.Dest); err == nil {
+-					fb.Type = "tcp"
+-				}
+-			}
+-		}
+-		if fb.Type == "" {
+-			return nil, errors.New(`VLESS fallbacks: please fill in a valid value for every "dest"`)
+-		}
+-		if fb.Xver > 2 {
+-			return nil, errors.New(`VLESS fallbacks: invalid PROXY protocol version, "xver" only accepts 0, 1, 2`)
+-		}
+-	}
+-
+-	return config, nil
+-}
+-
+ type VLessReverseConfig struct {
+ 	Tag      string          `json:"tag"`
+ 	Sniffing *SniffingConfig `json:"sniffing"`
+diff --git a/infra/conf/vless_inbound.go b/infra/conf/vless_inbound.go
+new file mode 100644
+index 0000000..fd207b7
+--- /dev/null
++++ b/infra/conf/vless_inbound.go
+@@ -0,0 +1,216 @@
++//go:build !xray_lite
++
++package conf
++
++import (
++	"encoding/base64"
++	"encoding/json"
++	"path/filepath"
++	"runtime"
++	"strconv"
++	"strings"
++	"syscall"
++
++	"github.com/xtls/xray-core/common/errors"
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/common/protocol"
++	"github.com/xtls/xray-core/common/serial"
++	"github.com/xtls/xray-core/common/task"
++	"github.com/xtls/xray-core/common/uuid"
++	"github.com/xtls/xray-core/proxy/vless"
++	"github.com/xtls/xray-core/proxy/vless/inbound"
++	"google.golang.org/protobuf/proto"
++)
++
++type VLessInboundFallback struct {
++	Name string          `json:"name"`
++	Alpn string          `json:"alpn"`
++	Path string          `json:"path"`
++	Type string          `json:"type"`
++	Dest json.RawMessage `json:"dest"`
++	Xver uint64          `json:"xver"`
++}
++
++type VLessInboundConfig struct {
++	Users      []json.RawMessage       `json:"users"`
++	Clients    []json.RawMessage       `json:"clients"`
++	Decryption string                  `json:"decryption"`
++	Fallbacks  []*VLessInboundFallback `json:"fallbacks"`
++	Flow       string                  `json:"flow"`
++	Testseed   []uint32                `json:"testseed"`
++}
++
++// Build implements Buildable
++func (c *VLessInboundConfig) Build() (proto.Message, error) {
++	config := new(inbound.Config)
++
++	if c.Clients != nil {
++		c.Users = c.Clients
++	}
++	config.Users = make([]*protocol.User, len(c.Users))
++	switch c.Flow {
++	case vless.XRV, "":
++	default:
++		return nil, errors.New(`VLESS "settings.flow" doesn't support "` + c.Flow + `" in this version`)
++	}
++	processClient := func(idx int) error {
++		rawUser := c.Users[idx]
++		user := new(protocol.User)
++		if err := json.Unmarshal(rawUser, user); err != nil {
++			return errors.New(`VLESS users: invalid user`).Base(err)
++		}
++		account := new(vless.Account)
++		if err := json.Unmarshal(rawUser, account); err != nil {
++			return errors.New(`VLESS users: invalid user`).Base(err)
++		}
++
++		u, err := uuid.ParseString(account.Id)
++		if err != nil {
++			return err
++		}
++		account.Id = u.String()
++
++		switch account.Flow {
++		case "":
++			account.Flow = c.Flow
++		case vless.XRV:
++		default:
++			return errors.New(`VLESS users: "flow" doesn't support "` + account.Flow + `" in this version`)
++		}
++
++		if len(account.Testseed) < 4 {
++			account.Testseed = c.Testseed
++		}
++
++		if account.Encryption != "" {
++			return errors.New(`VLESS users: "encryption" should not be in inbound settings`)
++		}
++
++		if account.Reverse != nil {
++			if account.Reverse.Tag == "" {
++				return errors.New(`VLESS users: "tag" can't be empty for "reverse"`)
++			}
++			if account.Reverse.Sniffing != nil { // may not be reached: error json unmarshal
++				return errors.New(`VLESS users: inbound's "reverse" can't have "sniffing"`)
++			}
++		}
++
++		user.Account = serial.ToTypedMessage(account)
++		config.Users[idx] = user
++		return nil
++	}
++
++	if err := task.ParallelForN(len(c.Users), processClient); err != nil {
++		return nil, err
++	}
++
++	config.Decryption = c.Decryption
++	if !func() bool {
++		s := strings.Split(config.Decryption, ".")
++		if len(s) < 4 || s[0] != "mlkem768x25519plus" {
++			return false
++		}
++		switch s[1] {
++		case "native":
++		case "xorpub":
++			config.XorMode = 1
++		case "random":
++			config.XorMode = 2
++		default:
++			return false
++		}
++		t := strings.SplitN(strings.TrimSuffix(s[2], "s"), "-", 2)
++		i, err := strconv.Atoi(t[0])
++		if err != nil {
++			return false
++		}
++		config.SecondsFrom = int64(i)
++		if len(t) == 2 {
++			i, err := strconv.Atoi(t[1])
++			if err != nil {
++				return false
++			}
++			config.SecondsTo = int64(i)
++		}
++		padding := 0
++		for _, r := range s[3:] {
++			if len(r) < 20 {
++				padding += len(r) + 1
++				continue
++			}
++			if b, _ := base64.RawURLEncoding.DecodeString(r); len(b) != 32 && len(b) != 64 {
++				return false
++			}
++		}
++		config.Decryption = config.Decryption[27+len(s[2]):]
++		if padding > 0 {
++			config.Padding = config.Decryption[:padding-1]
++			config.Decryption = config.Decryption[padding:]
++		}
++		return true
++	}() && config.Decryption != "none" {
++		if config.Decryption == "" {
++			return nil, errors.New(`VLESS settings: please add/set "decryption":"none" to every settings`)
++		}
++		return nil, errors.New(`VLESS settings: unsupported "decryption": ` + config.Decryption)
++	}
++
++	if config.Decryption != "none" && c.Fallbacks != nil {
++		return nil, errors.New(`VLESS settings: "fallbacks" can not be used together with "decryption"`)
++	}
++
++	for _, fb := range c.Fallbacks {
++		var i uint16
++		var s string
++		if err := json.Unmarshal(fb.Dest, &i); err == nil {
++			s = strconv.Itoa(int(i))
++		} else {
++			_ = json.Unmarshal(fb.Dest, &s)
++		}
++		config.Fallbacks = append(config.Fallbacks, &inbound.Fallback{
++			Name: fb.Name,
++			Alpn: fb.Alpn,
++			Path: fb.Path,
++			Type: fb.Type,
++			Dest: s,
++			Xver: fb.Xver,
++		})
++	}
++	for _, fb := range config.Fallbacks {
++		/*
++			if fb.Alpn == "h2" && fb.Path != "" {
++				return nil, errors.New(`VLESS fallbacks: "alpn":"h2" doesn't support "path"`)
++			}
++		*/
++		if fb.Path != "" && fb.Path[0] != '/' {
++			return nil, errors.New(`VLESS fallbacks: "path" must be empty or start with "/"`)
++		}
++		if fb.Type == "" && fb.Dest != "" {
++			if fb.Dest == "serve-ws-none" {
++				fb.Type = "serve"
++			} else if filepath.IsAbs(fb.Dest) || fb.Dest[0] == '@' {
++				fb.Type = "unix"
++				if strings.HasPrefix(fb.Dest, "@@") && (runtime.GOOS == "linux" || runtime.GOOS == "android") {
++					fullAddr := make([]byte, len(syscall.RawSockaddrUnix{}.Path)) // may need padding to work with haproxy
++					copy(fullAddr, fb.Dest[1:])
++					fb.Dest = string(fullAddr)
++				}
++			} else {
++				if _, err := strconv.Atoi(fb.Dest); err == nil {
++					fb.Dest = "localhost:" + fb.Dest
++				}
++				if _, _, err := net.SplitHostPort(fb.Dest); err == nil {
++					fb.Type = "tcp"
++				}
++			}
++		}
++		if fb.Type == "" {
++			return nil, errors.New(`VLESS fallbacks: please fill in a valid value for every "dest"`)
++		}
++		if fb.Xver > 2 {
++			return nil, errors.New(`VLESS fallbacks: invalid PROXY protocol version, "xver" only accepts 0, 1, 2`)
++		}
++	}
++
++	return config, nil
++}
+diff --git a/infra/conf/vless_test.go b/infra/conf/vless_test.go
+index 8c85fde..a4fe0b2 100644
+--- a/infra/conf/vless_test.go
++++ b/infra/conf/vless_test.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf_test
+ 
+ import (
+diff --git a/infra/conf/vmess.go b/infra/conf/vmess.go
+index 6ff2746..d699b8a 100644
+--- a/infra/conf/vmess.go
++++ b/infra/conf/vmess.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf
+ 
+ import (
+diff --git a/infra/conf/vmess_test.go b/infra/conf/vmess_test.go
+index b94db83..feb0b33 100644
+--- a/infra/conf/vmess_test.go
++++ b/infra/conf/vmess_test.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf_test
+ 
+ import (
+diff --git a/infra/conf/wireguard.go b/infra/conf/wireguard.go
+index f489d38..8de7024 100644
+--- a/infra/conf/wireguard.go
++++ b/infra/conf/wireguard.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf
+ 
+ import (
+diff --git a/infra/conf/xray.go b/infra/conf/xray.go
+index 2c94ce5..ef25f99 100644
+--- a/infra/conf/xray.go
++++ b/infra/conf/xray.go
+@@ -16,48 +16,7 @@ import (
+ 	"github.com/xtls/xray-core/common/serial"
+ 	core "github.com/xtls/xray-core/core"
+ 	"github.com/xtls/xray-core/proxy/freedom"
+-	"github.com/xtls/xray-core/proxy/masque"
+-	"github.com/xtls/xray-core/proxy/vless"
+-	"github.com/xtls/xray-core/proxy/vless/inbound"
+-	"github.com/xtls/xray-core/proxy/vless/outbound"
+ 	"github.com/xtls/xray-core/transport/internet"
+-	"google.golang.org/protobuf/proto"
+-)
+-
+-var (
+-	inboundConfigLoader = NewJSONConfigLoader(ConfigCreatorCache{
+-		"tunnel":        func() interface{} { return new(DokodemoConfig) },
+-		"dokodemo-door": func() interface{} { return new(DokodemoConfig) },
+-		"http":          func() interface{} { return new(HTTPServerConfig) },
+-		"shadowsocks":   func() interface{} { return new(ShadowsocksServerConfig) },
+-		"mixed":         func() interface{} { return new(SocksServerConfig) },
+-		"socks":         func() interface{} { return new(SocksServerConfig) },
+-		"vless":         func() interface{} { return new(VLessInboundConfig) },
+-		"vmess":         func() interface{} { return new(VMessInboundConfig) },
+-		"trojan":        func() interface{} { return new(TrojanServerConfig) },
+-		"wireguard":     func() interface{} { return &WireGuardConfig{IsClient: false} },
+-		"hysteria":      func() interface{} { return new(HysteriaServerConfig) },
+-		"masque":        func() interface{} { return new(MasqueServerConfig) },
+-		"tun":           func() interface{} { return new(TunConfig) },
+-	}, "protocol", "settings")
+-
+-	outboundConfigLoader = NewJSONConfigLoader(ConfigCreatorCache{
+-		"block":       func() interface{} { return new(BlackholeConfig) },
+-		"blackhole":   func() interface{} { return new(BlackholeConfig) },
+-		"loopback":    func() interface{} { return new(LoopbackConfig) },
+-		"direct":      func() interface{} { return new(FreedomConfig) },
+-		"freedom":     func() interface{} { return new(FreedomConfig) },
+-		"http":        func() interface{} { return new(HTTPClientConfig) },
+-		"shadowsocks": func() interface{} { return new(ShadowsocksClientConfig) },
+-		"socks":       func() interface{} { return new(SocksClientConfig) },
+-		"vless":       func() interface{} { return new(VLessOutboundConfig) },
+-		"vmess":       func() interface{} { return new(VMessOutboundConfig) },
+-		"trojan":      func() interface{} { return new(TrojanClientConfig) },
+-		"hysteria":    func() interface{} { return new(HysteriaClientConfig) },
+-		"masque":      func() interface{} { return new(MasqueClientConfig) },
+-		"dns":         func() interface{} { return new(DNSOutboundConfig) },
+-		"wireguard":   func() interface{} { return &WireGuardConfig{IsClient: true} },
+-	}, "protocol", "settings")
+ )
+ 
+ type SniffingConfig struct {
+@@ -210,10 +169,7 @@ func (c *InboundDetourConfig) Build() (*core.InboundHandlerConfig, error) {
+ 	if err != nil {
+ 		return nil, errors.New("failed to build inbound handler for protocol ", c.Protocol).Base(err)
+ 	}
+-	if _, ok := ts.(*masque.ServerConfig); !ok && receiverSettings.StreamSettings != nil && receiverSettings.StreamSettings.ProtocolName == "masque" {
+-		return nil, errors.New("the masque transport can only be used by the masque inbound")
+-	}
+-	if err := validateXDrive(ts, receiverSettings.StreamSettings, nil, receiverSettings.PortList); err != nil {
++	if err := validateInboundTransport(ts, receiverSettings); err != nil {
+ 		return nil, err
+ 	}
+ 
+@@ -247,77 +203,6 @@ func requiresTransportSecurity(address *Address) bool {
+ 	return !geodata.GetPrivateDomainMatcher().MatchAny(domain)
+ }
+ 
+-func validateOutboundTransportSecurity(rawConfig interface{}, senderSettings *proxyman.SenderConfig) error {
+-	if senderSettings.StreamSettings != nil && senderSettings.StreamSettings.GetSecurityType() != "" {
+-		return nil
+-	}
+-
+-	if vlessCfg, ok := rawConfig.(*VLessOutboundConfig); ok {
+-		if vlessCfg.Encryption != "" && vlessCfg.Encryption != "none" {
+-			return nil
+-		}
+-		if requiresTransportSecurity(vlessCfg.Address) {
+-			return errors.New("vless without TLS or other encryption is prohibited unless the server address is a private IP or domain")
+-		}
+-	}
+-
+-	if tjCfg, ok := rawConfig.(*TrojanClientConfig); ok {
+-		if requiresTransportSecurity(tjCfg.Servers[0].Address) {
+-			return errors.New("trojan without TLS is prohibited unless the server address is a private IP or domain")
+-		}
+-	}
+-
+-	return nil
+-}
+-
+-// validateXDrive allows only VLESS with encryption on xdrive, and on the client Mux.Cool for every connection
+-func validateXDrive(ts proto.Message, ss *internet.StreamConfig, ms *proxyman.MultiplexingConfig, pl *net.PortList) error {
+-	if ss == nil || ss.ProtocolName != "xdrive" {
+-		return nil
+-	}
+-	switch c := ts.(type) {
+-	case *outbound.Config:
+-		a, err := c.Vnext.User.Account.GetInstance()
+-		if err != nil {
+-			return err
+-		}
+-		account := a.(*vless.Account)
+-		if account.Flow != "" {
+-			return errors.New(`the xdrive transport doesn't support VLESS "flow"`)
+-		}
+-		if account.Encryption == "none" {
+-			return errors.New(`the xdrive transport needs VLESS "encryption", run "xray vlessenc" to get one`)
+-		}
+-		// reverse opens its own mux
+-		if account.Reverse == nil && (ms == nil || !ms.Enabled || ms.Concurrency < 0 || ms.XudpConcurrency < 0 || ms.XudpProxyUDP443 == "skip") {
+-			return errors.New(`the xdrive transport needs "mux" enabled, with no negative "concurrency" or "xudpConcurrency" and no "xudpProxyUDP443":"skip"`)
+-		}
+-		if account.Testpre != 0 {
+-			return errors.New(`the xdrive transport doesn't support VLESS "testpre"`)
+-		}
+-	case *inbound.Config:
+-		if c.Decryption == "none" {
+-			return errors.New(`the xdrive transport needs VLESS "decryption", run "xray vlessenc" to get one`)
+-		}
+-		for _, user := range c.Users {
+-			a, err := user.Account.GetInstance()
+-			if err != nil {
+-				return err
+-			}
+-			if a.(*vless.Account).Flow != "" {
+-				return errors.New(`the xdrive transport doesn't support VLESS "flow"`)
+-			}
+-		}
+-		// every port gets its own listener on the same folder, and each of them accepts the same session
+-		if pl != nil && len(pl.Ports()) != 1 {
+-			return errors.New("the xdrive transport can only listen on one port")
+-		}
+-	default:
+-		return errors.New("the xdrive transport can only be used by VLESS")
+-	}
+-	return nil
+-}
+-
+ // Build implements Buildable.
+ func (c *OutboundDetourConfig) Build() (*core.OutboundHandlerConfig, error) {
+ 	if c.ProxySettings != nil {
+@@ -396,15 +281,12 @@ func (c *OutboundDetourConfig) Build() (*core.OutboundHandlerConfig, error) {
+ 	if err != nil {
+ 		return nil, errors.New("failed to build outbound handler for protocol ", c.Protocol).Base(err)
+ 	}
+-	if err := validateXDrive(ts, senderSettings.StreamSettings, senderSettings.MultiplexSettings, nil); err != nil {
+-		return nil, err
+-	}
+ 	if err := validateOutboundTransportSecurity(rawConfig, senderSettings); err != nil {
+ 		return nil, err
+ 	}
+ 
+-	if _, ok := ts.(*masque.ClientConfig); !ok && senderSettings.StreamSettings != nil && senderSettings.StreamSettings.ProtocolName == "masque" {
+-		return nil, errors.New("the masque transport can only be used by the masque outbound")
++	if err := validateOutboundTransport(ts, senderSettings); err != nil {
++		return nil, err
+ 	}
+ 
+ 	if fc, ok := ts.(*freedom.Config); ok {
+diff --git a/infra/conf/xray_test.go b/infra/conf/xray_test.go
+index 890b80e..1bee1a2 100644
+--- a/infra/conf/xray_test.go
++++ b/infra/conf/xray_test.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package conf_test
+ 
+ import (
+diff --git a/main/distro/all/all.go b/main/distro/all/all.go
+index 840d0e1..dbad1a2 100644
+--- a/main/distro/all/all.go
++++ b/main/distro/all/all.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package all
+ 
+ import (
+diff --git a/main/distro/all/lite.go b/main/distro/all/lite.go
+new file mode 100644
+index 0000000..ba3da8d
+--- /dev/null
++++ b/main/distro/all/lite.go
+@@ -0,0 +1,27 @@
++//go:build xray_lite
++
++// The lite distribution deliberately registers only the client features used by Passwall.
++package all
++
++import (
++	_ "github.com/xtls/xray-core/app/dispatcher"
++	_ "github.com/xtls/xray-core/app/log"
++	_ "github.com/xtls/xray-core/app/policy"
++	_ "github.com/xtls/xray-core/app/proxyman/inbound"
++	_ "github.com/xtls/xray-core/app/proxyman/outbound"
++	_ "github.com/xtls/xray-core/app/router"
++	_ "github.com/xtls/xray-core/main/confloader/external"
++	_ "github.com/xtls/xray-core/main/json"
++	_ "github.com/xtls/xray-core/proxy/blackhole"
++	_ "github.com/xtls/xray-core/proxy/dokodemo"
++	_ "github.com/xtls/xray-core/proxy/freedom"
++	_ "github.com/xtls/xray-core/proxy/socks"
++	_ "github.com/xtls/xray-core/proxy/vless/outbound"
++	_ "github.com/xtls/xray-core/transport/internet/headers/http"
++	_ "github.com/xtls/xray-core/transport/internet/headers/noop"
++	_ "github.com/xtls/xray-core/transport/internet/reality"
++	_ "github.com/xtls/xray-core/transport/internet/tagged/taggedimpl"
++	_ "github.com/xtls/xray-core/transport/internet/tcp"
++	_ "github.com/xtls/xray-core/transport/internet/tls"
++	_ "github.com/xtls/xray-core/transport/internet/udp"
++)
+diff --git a/tools/lite/smoke.py b/tools/lite/smoke.py
+new file mode 100644
+index 0000000..755b646
+--- /dev/null
++++ b/tools/lite/smoke.py
+@@ -0,0 +1,230 @@
++#!/usr/bin/env python3
++"""Local interoperability check: a lite client against a full REALITY/Vision server.
++
++No external VPS, network namespaces or firewall changes. Needs a Go toolchain (set GO to override go).
++Usage: python3 tools/lite/smoke.py /path/to/lite /path/to/full [qemu-aarch64-static]
++The optional emulator runs the lite binary; the full server remains native.
++"""
++import contextlib
++import copy
++import hashlib
++import json
++import os
++import socket
++import struct
++import subprocess
++import sys
++import tempfile
++import threading
++import time
++
++
++def recv_exact(s, n):
++    out = b''
++    while len(out) < n:
++        part = s.recv(n - len(out))
++        if not part:
++            raise RuntimeError('unexpected EOF')
++        out += part
++    return out
++
++
++def free_port():
++    with contextlib.closing(socket.socket()) as s:
++        s.bind(('127.0.0.1', 0))
++        return s.getsockname()[1]
++
++
++def wait_port(port, proc):
++    for _ in range(100):
++        if proc.poll() is not None:
++            raise RuntimeError('Xray exited before opening port')
++        try:
++            with socket.create_connection(('127.0.0.1', port), .1):
++                return
++        except OSError:
++            time.sleep(.05)
++    raise RuntimeError('listener timeout')
++
++
++def serve_tcp(listener):
++    def connection(c):
++        try:
++            with contextlib.closing(c):
++                while True:
++                    data = c.recv(65536)
++                    if not data:
++                        return
++                    c.sendall(data)
++        except OSError:
++            pass
++    while True:
++        try:
++            c, _ = listener.accept()
++        except OSError:
++            return
++        threading.Thread(target=connection, args=(c,), daemon=True).start()
++
++
++def serve_udp(s):
++    while True:
++        try:
++            data, peer = s.recvfrom(65535)
++            s.sendto(data, peer)
++        except OSError:
++            return
++
++
++def socks(port, command, dest_port):
++    s = socket.create_connection(('127.0.0.1', port), 15)
++    s.sendall(b'\x05\x01\x00')
++    assert recv_exact(s, 2) == b'\x05\x00'
++    s.sendall(b'\x05' + bytes([command]) + b'\x00\x01' + socket.inet_aton('127.0.0.1') + struct.pack('!H', dest_port))
++    head = recv_exact(s, 4)
++    assert head[:3] == b'\x05\x00\x00', head
++    assert head[3] == 1, head
++    addr = socket.inet_ntoa(recv_exact(s, 4))
++    udp_port = struct.unpack('!H', recv_exact(s, 2))[0]
++    return s, (addr if addr != '0.0.0.0' else '127.0.0.1', udp_port)
++
++
++def main():
++    lite, full = map(os.path.abspath, sys.argv[1:3])
++    command = ([os.path.abspath(sys.argv[3])] if len(sys.argv) > 3 else []) + [lite]
++    fixture = os.path.join(os.path.dirname(__file__), '../../infra/conf/testdata/lite-passwall.json')
++    processes = []
++    listeners = []
++    with tempfile.TemporaryDirectory(prefix='xray-lite-smoke-') as tmp:
++        logs = []
++        try:
++            for _ in range(2):
++                s = socket.socket()
++                s.bind(('127.0.0.1', 0))
++                s.listen(32)
++                listeners.append(s)
++            udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
++            udp.bind(('127.0.0.1', 0))
++            listeners.append(udp)
++            target, echo = listeners[:2]
++            tls_port = target.getsockname()[1]
++            target.close()
++            probe = os.path.join(tmp, 'tlsprobe')
++            subprocess.check_call([os.environ.get('GO', 'go'), 'build', '-o', probe, os.path.join(os.path.dirname(__file__), 'tlsprobe.go')])
++            tls_proc = subprocess.Popen([probe, 'server', str(tls_port)])
++            processes.append(tls_proc)
++            wait_port(tls_port, tls_proc)
++            threading.Thread(target=serve_tcp, args=(echo,), daemon=True).start()
++            threading.Thread(target=serve_udp, args=(udp,), daemon=True).start()
++            keys = subprocess.check_output([full, 'x25519']).decode()
++            private = keys.split('PrivateKey: ')[1].splitlines()[0]
++            public = keys.split('Password (PublicKey): ')[1].splitlines()[0]
++            server_port, socks_port, redir_port, reverse_port = free_port(), free_port(), free_port(), free_port()
++            with open(fixture, encoding='utf-8') as f:
++                client = json.load(f)
++            client['env'] = {}
++            client['inbounds'][0]['listen'] = '127.0.0.1'
++            client['inbounds'][0]['port'] = socks_port
++            for inbound in client['inbounds'][1:]:
++                inbound['listen'] = '127.0.0.1'
++                inbound['port'] = redir_port
++            node = client['outbounds'][0]
++            node['settings'].update(address='127.0.0.1', port=server_port)
++            node['streamSettings']['realitySettings'].update(publicKey=public, serverName='localhost')
++            server = {
++                'log': {'loglevel': 'error'},
++                'inbounds': [{'listen': '127.0.0.1', 'port': server_port, 'protocol': 'vless', 'settings': {'clients': [{'id': node['settings']['id'], 'flow': 'xtls-rprx-vision'}], 'decryption': 'none'}, 'streamSettings': {'network': 'raw', 'security': 'reality', 'realitySettings': {'target': '127.0.0.1:' + str(tls_port), 'serverNames': ['localhost'], 'privateKey': private, 'shortIds': ['abcd']}}}],
++                'outbounds': [{'protocol': 'freedom', 'settings': {'finalRules': [{'action': 'allow'}]}}]
++            }
++            # A separate reverse-only identity establishes a VLESS reverse bridge.
++            reverse_id = '22222222-2222-4222-8222-222222222222'
++            server['inbounds'][0]['settings']['clients'].append({'id': reverse_id, 'flow': 'xtls-rprx-vision', 'reverse': {'tag': 'reverse-portal'}})
++            server['inbounds'].append({'listen': '127.0.0.1', 'port': reverse_port, 'protocol': 'socks', 'tag': 'reverse-socks', 'settings': {'auth': 'noauth'}})
++            server['routing'] = {'rules': [{'inboundTag': ['reverse-socks'], 'outboundTag': 'reverse-portal'}]}
++            reverse_node = copy.deepcopy(node)
++            reverse_node['tag'] = 'reverse-bridge-out'
++            reverse_node['settings'].update(id=reverse_id, reverse={'tag': 'reverse-bridge'})
++            client['outbounds'].append(reverse_node)
++            client['routing']['rules'].insert(0, {'inboundTag': ['reverse-bridge'], 'outboundTag': 'direct'})
++            for label, cmd, config, port in [('server', [full], server, server_port), ('client', command, client, socks_port)]:
++                path = os.path.join(tmp, label + '.json')
++                with open(path, 'w') as f:
++                    json.dump(config, f)
++                subprocess.check_call(cmd + ['run', '-test', '-c', path], stdout=subprocess.DEVNULL)
++                log = open(os.path.join(tmp, label + '.log'), 'w+')
++                logs.append(log)
++                proc = subprocess.Popen(cmd + ['run', '-c', path], stdout=log, stderr=log)
++                processes.append(proc)
++                wait_port(port, proc)
++            payload = os.urandom(1024 * 1024)
++            # Send concurrently so this checks sustained bidirectional forwarding.
++            s, _ = socks(socks_port, 1, echo.getsockname()[1])
++            with contextlib.closing(s):
++                sender = threading.Thread(target=s.sendall, args=(payload,))
++                sender.start()
++                assert hashlib.sha256(recv_exact(s, len(payload))).digest() == hashlib.sha256(payload).digest()
++                sender.join(15)
++                assert not sender.is_alive()
++            print('PASS SOCKS TCP -> VLESS REALITY/Vision -> TCP echo (1 MiB SHA256)')
++            # TLS application traffic activates the Vision TLS parsing/direct-copy path.
++            subprocess.check_call([probe, 'client', str(socks_port), str(tls_port)])
++            print('PASS SOCKS TLS application -> REALITY/Vision -> TLS echo (1 MiB)')
++            control, relay = socks(socks_port, 3, 0)
++            with contextlib.closing(control), contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_DGRAM)) as u:
++                u.settimeout(15)
++                header = b'\x00\x00\x00\x01' + socket.inet_aton('127.0.0.1') + struct.pack('!H', udp.getsockname()[1])
++                for size in [1, 512, 1400, 4096]:
++                    packet = os.urandom(size)
++                    u.sendto(header + packet, relay)
++                    received, _ = u.recvfrom(65535)
++                    assert received[:10] == header and received[10:] == packet
++            print('PASS SOCKS UDP -> VLESS XUDP -> UDP echo (1/512/1400/4096 bytes)')
++            with socket.create_connection(('127.0.0.1', socks_port), 15) as c:
++                c.sendall(('CONNECT 127.0.0.1:%d HTTP/1.1\r\nHost: localhost\r\n\r\n' % echo.getsockname()[1]).encode())
++                response = b''
++                while not response.endswith(b'\r\n\r\n'):
++                    response += recv_exact(c, 1)
++                    assert len(response) < 8192
++                assert response.startswith(b'HTTP/1.1 200'), response
++                c.sendall(payload[:65536])
++                assert recv_exact(c, 65536) == payload[:65536]
++            print('PASS SOCKS HTTP CONNECT fallback -> REALITY/Vision -> echo (64 KiB)')
++            # Wait for the periodic reverse bridge to register at the server.
++            reverse_error = None
++            for _ in range(50):
++                try:
++                    c, _ = socks(reverse_port, 1, echo.getsockname()[1])
++                    with contextlib.closing(c):
++                        c.settimeout(1)
++                        c.sendall(payload[:65536])
++                        assert recv_exact(c, 65536) == payload[:65536]
++                    reverse_error = None
++                    break
++                except (OSError, RuntimeError, AssertionError) as exc:
++                    reverse_error = exc
++                    time.sleep(.1)
++            if reverse_error is not None:
++                raise RuntimeError('VLESS reverse forwarding failed: ' + str(reverse_error))
++            print('PASS server SOCKS -> VLESS reverse -> lite client direct -> echo (64 KiB)')
++            print('PASS TCP REDIRECT + UDP TPROXY listeners start with mark=255')
++        except Exception:
++            for log in logs:
++                log.flush()
++                log.seek(0)
++                sys.stderr.write(log.read())
++            raise
++        finally:
++            for proc in reversed(processes):
++                proc.terminate()
++                try:
++                    proc.wait(timeout=5)
++                except subprocess.TimeoutExpired:
++                    proc.kill()
++                    proc.wait()
++            for s in listeners:
++                s.close()
++            for log in logs:
++                log.close()
++
++
++if __name__ == '__main__':
++    main()
+diff --git a/tools/lite/tlsprobe.go b/tools/lite/tlsprobe.go
+new file mode 100644
+index 0000000..a2dad5a
+--- /dev/null
++++ b/tools/lite/tlsprobe.go
+@@ -0,0 +1,97 @@
++// A local TLS 1.3 echo endpoint and SOCKS TLS client for smoke.py.
++package main
++
++import (
++	"bytes"
++	"crypto/ecdsa"
++	"crypto/elliptic"
++	"crypto/rand"
++	"crypto/tls"
++	"crypto/x509"
++	"crypto/x509/pkix"
++	"fmt"
++	"io"
++	"math/big"
++	"net"
++	"os"
++	"strconv"
++	"time"
++)
++
++func main() {
++	if err := run(); err != nil {
++		fmt.Fprintln(os.Stderr, err)
++		os.Exit(1)
++	}
++}
++func run() error {
++	if os.Args[1] == "server" {
++		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
++		if err != nil {
++			return err
++		}
++		cert := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "localhost"}, DNSNames: []string{"localhost"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
++		der, err := x509.CreateCertificate(rand.Reader, cert, cert, &key.PublicKey, key)
++		if err != nil {
++			return err
++		}
++		l, err := tls.Listen("tcp", "127.0.0.1:"+os.Args[2], &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}, MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13, CurvePreferences: []tls.CurveID{tls.X25519}, NextProtos: []string{"h2", "http/1.1"}})
++		if err != nil {
++			return err
++		}
++		defer l.Close()
++		for {
++			c, err := l.Accept()
++			if err != nil {
++				return err
++			}
++			go func() { defer c.Close(); io.Copy(c, c) }()
++		}
++	}
++	c, err := net.DialTimeout("tcp", "127.0.0.1:"+os.Args[2], 10*time.Second)
++	if err != nil {
++		return err
++	}
++	defer c.Close()
++	c.SetDeadline(time.Now().Add(20 * time.Second))
++	c.Write([]byte{5, 1, 0})
++	reply := make([]byte, 2)
++	if _, err = io.ReadFull(c, reply); err != nil {
++		return err
++	}
++	if !bytes.Equal(reply, []byte{5, 0}) {
++		return fmt.Errorf("SOCKS greeting: %x", reply)
++	}
++	port, err := strconv.Atoi(os.Args[3])
++	if err != nil {
++		return err
++	}
++	c.Write([]byte{5, 1, 0, 1, 127, 0, 0, 1, byte(port >> 8), byte(port)})
++	reply = make([]byte, 10)
++	if _, err = io.ReadFull(c, reply); err != nil {
++		return err
++	}
++	if reply[1] != 0 {
++		return fmt.Errorf("SOCKS connect: %x", reply)
++	}
++	// This certificate belongs to the local, ephemeral test endpoint only.
++	t := tls.Client(c, &tls.Config{ServerName: "localhost", InsecureSkipVerify: true, MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13})
++	if err = t.Handshake(); err != nil {
++		return err
++	}
++	payload := make([]byte, 1024*1024)
++	rand.Read(payload)
++	sent := make(chan error, 1)
++	go func() { _, err := t.Write(payload); sent <- err }()
++	received := make([]byte, len(payload))
++	if _, err = io.ReadFull(t, received); err != nil {
++		return err
++	}
++	if err = <-sent; err != nil {
++		return err
++	}
++	if !bytes.Equal(received, payload) {
++		return fmt.Errorf("TLS echo mismatch")
++	}
++	return nil
++}
+diff --git a/transport/internet/tls/ech.go b/transport/internet/tls/ech.go
+index 171b60b..1159c50 100644
+--- a/transport/internet/tls/ech.go
++++ b/transport/internet/tls/ech.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package tls
+ 
+ import (
+diff --git a/transport/internet/tls/ech_lite.go b/transport/internet/tls/ech_lite.go
+new file mode 100644
+index 0000000..cb3aa91
+--- /dev/null
++++ b/transport/internet/tls/ech_lite.go
+@@ -0,0 +1,10 @@
++//go:build xray_lite
++
++package tls
++
++import (
++	gotls "crypto/tls"
++	"github.com/xtls/xray-core/common/errors"
++)
++
++func ApplyECH(*Config, *gotls.Config) error { return errors.New("ECH excluded from xray_lite") }
+diff --git a/transport/internet/tls/ech_test.go b/transport/internet/tls/ech_test.go
+index cf0d009..51017a3 100644
+--- a/transport/internet/tls/ech_test.go
++++ b/transport/internet/tls/ech_test.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package tls
+ 
+ import (
+diff --git a/transport/internet/tls/grpc.go b/transport/internet/tls/grpc.go
+index 5a437bf..7afa603 100644
+--- a/transport/internet/tls/grpc.go
++++ b/transport/internet/tls/grpc.go
+@@ -1,3 +1,5 @@
++//go:build !xray_lite
++
+ package tls
+ 
+ import (

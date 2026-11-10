@@ -830,6 +830,32 @@ struct nvram_pair router_defaults[] = {
 	{ "ddnsto_id", "" },
 #endif
 
+#if defined(APP_QUARKDRIVE)
+	/* QuarkDrive WebDAV: buffers fit devices with limited RAM. */
+	{ "quarkdrive_enable", "0" },
+	{ "qd_binary", "/usr/bin/quarkdrive-webdav" },
+	{ "qd_cookie", "" },
+	{ "qd_auth_user", "" },
+	{ "qd_auth_password", "" },
+	{ "qd_host", "0.0.0.0" },
+	{ "qd_port", "8088" },
+	{ "qd_root", "/" },
+	{ "qd_read_buffer_size", "1048576" },
+	{ "qd_upload_buffer_size", "1048576" },
+	{ "qd_cache_size", "1000" },
+	{ "qd_cache_ttl", "600" },
+	{ "qd_refresh_cache_secs_interval", "300" },
+	{ "qd_upload_wait_timeout", "280" },
+	{ "qd_strip_prefix", "" },
+	{ "qd_auto_index", "1" },
+	{ "qd_no_trash", "0" },
+	{ "qd_read_only", "0" },
+	{ "qd_skip_upload_same_size", "0" },
+	{ "qd_prefer_http_download", "0" },
+	{ "qd_redirect", "0" },
+	{ "qd_debug", "0" },
+#endif
+
 #if defined(APP_ALDRIVER)
 	/*阿里云盘*/
 	{ "aliyundrive_enable", "0" },

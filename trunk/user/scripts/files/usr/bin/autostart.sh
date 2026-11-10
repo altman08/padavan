@@ -89,6 +89,11 @@ logger -t "自动启动" "正在启动 ddnsto..."
 /usr/bin/ddnsto.sh start
 fi
 
+if [ "$(nvram get quarkdrive_enable)" = 1 ] && [ -x /usr/bin/quarkdrive-webdav.sh ]; then
+logger -t "自动启动" "正在启动夸克网盘 WebDAV..."
+/usr/bin/quarkdrive-webdav.sh start
+fi
+
 if [ $(nvram get aliyundrive_enable) = 1 ] ; then
 logger -t "自动启动" "正在启动阿里云盘..."
 /usr/bin/aliyundrive-webdav.sh start

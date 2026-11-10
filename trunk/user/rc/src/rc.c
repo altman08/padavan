@@ -1183,6 +1183,12 @@ handle_notifications(void)
 		}
 #endif
 
+#if defined(APP_QUARKDRIVE)
+		else if (strcmp(entry->d_name, RCN_RESTART_QUARKDRIVE) == 0)
+		{
+			restart_quarkdrive();
+		}
+#endif
 #if defined(APP_ALDRIVER)
 		else if (strcmp(entry->d_name, RCN_RESTART_ALDRIVER) == 0)
 		{

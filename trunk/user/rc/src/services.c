@@ -473,6 +473,18 @@ void restart_sqm(void){
 }
 #endif
 
+#if defined(APP_QUARKDRIVE)
+void stop_quarkdrive(void)
+{
+	eval("/usr/bin/quarkdrive-webdav.sh", "stop");
+}
+void restart_quarkdrive(void)
+{
+	/* The script validates the new settings before stopping the old process. */
+	eval("/usr/bin/quarkdrive-webdav.sh", "restart");
+}
+#endif
+
 #if defined(APP_ALDRIVER)
 void stop_aldriver(void){
 	eval("/usr/bin/aliyundrive-webdav.sh","stop");
@@ -857,6 +869,9 @@ stop_services(int stopall)
 	stop_sqm();
 #endif
 
+#if defined(APP_QUARKDRIVE)
+	stop_quarkdrive();
+#endif
 #if defined(APP_ALDRIVER)
 	stop_aldriver();
 #endif

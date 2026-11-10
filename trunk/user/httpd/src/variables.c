@@ -990,6 +990,34 @@
 		};
 #endif
 
+#if defined(APP_QUARKDRIVE)
+	struct variable variables_QUARKDRIVE[] = {
+		{"quarkdrive_enable", "", NULL, EVM_RESTART_QUARKDRIVE},
+		{"qd_binary", "", NULL, EVM_RESTART_QUARKDRIVE},
+		{"qd_cookie", "", NULL, EVM_RESTART_QUARKDRIVE},
+		{"qd_auth_user", "", NULL, EVM_RESTART_QUARKDRIVE},
+		{"qd_auth_password", "", NULL, EVM_RESTART_QUARKDRIVE},
+		{"qd_host", "", NULL, EVM_RESTART_QUARKDRIVE},
+		{"qd_port", "", NULL, EVM_RESTART_QUARKDRIVE},
+		{"qd_root", "", NULL, EVM_RESTART_QUARKDRIVE},
+		{"qd_read_buffer_size", "", NULL, EVM_RESTART_QUARKDRIVE},
+		{"qd_upload_buffer_size", "", NULL, EVM_RESTART_QUARKDRIVE},
+		{"qd_cache_size", "", NULL, EVM_RESTART_QUARKDRIVE},
+		{"qd_cache_ttl", "", NULL, EVM_RESTART_QUARKDRIVE},
+		{"qd_refresh_cache_secs_interval", "", NULL, EVM_RESTART_QUARKDRIVE},
+		{"qd_upload_wait_timeout", "", NULL, EVM_RESTART_QUARKDRIVE},
+		{"qd_strip_prefix", "", NULL, EVM_RESTART_QUARKDRIVE},
+		{"qd_auto_index", "", NULL, EVM_RESTART_QUARKDRIVE},
+		{"qd_no_trash", "", NULL, EVM_RESTART_QUARKDRIVE},
+		{"qd_read_only", "", NULL, EVM_RESTART_QUARKDRIVE},
+		{"qd_skip_upload_same_size", "", NULL, EVM_RESTART_QUARKDRIVE},
+		{"qd_prefer_http_download", "", NULL, EVM_RESTART_QUARKDRIVE},
+		{"qd_redirect", "", NULL, EVM_RESTART_QUARKDRIVE},
+		{"qd_debug", "", NULL, EVM_RESTART_QUARKDRIVE},
+		{0,0,0,0}
+	};
+#endif
+
 #if defined(APP_ALDRIVER)
 	struct variable variables_ALDRIVER[] = {
 			{"aliyundrive_enable", "", NULL, EVM_RESTART_ALDRIVER},
@@ -1371,6 +1399,9 @@
 #if defined(APP_ALDRIVER)
 		{"ALDRIVER",		variables_ALDRIVER},
 #endif
+#if defined(APP_QUARKDRIVE)
+		{"QUARKDRIVE", variables_QUARKDRIVE},
+#endif
 #if defined(APP_WIREGUARD)
 		{"WIREGUARD",		variables_WIREGUARD},
 #endif
@@ -1490,6 +1521,9 @@
 #endif
 #if defined(APP_ALDRIVER)
 		{EVM_RESTART_ALDRIVER,		EVT_RESTART_ALDRIVER,		RCN_RESTART_ALDRIVER,	0},
+#endif
+#if defined(APP_QUARKDRIVE)
+		{EVM_RESTART_QUARKDRIVE, EVT_RESTART_QUARKDRIVE, RCN_RESTART_QUARKDRIVE, 0},
 #endif
 #if defined(APP_SQM)
 		{EVM_RESTART_SQM,		EVT_RESTART_SQM,		RCN_RESTART_SQM,	0},

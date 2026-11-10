@@ -1,0 +1,668 @@
+From: Padavan contributors
+Subject: [PATCH] Port EIP93 TLS to MT7621 o32 and Linux 4.4 AF_ALG
+
+--- a/src/eip93/mod.rs
++++ b/src/eip93/mod.rs
+@@ -17,14 +17,13 @@
+     CipherSuite, ConnectionTrafficSecrets, ContentType, Error, ProtocolVersion,
+     SupportedCipherSuite, Tls12CipherSuite, Tls13CipherSuite,
+ };
+-use std::{io, sync::Once};
++use std::{io, sync::{Mutex, Once}};
+ use zeroize::{Zeroize, Zeroizing};
+ 
+ #[cfg(all(
+     target_os = "linux",
+-    target_pointer_width = "64",
+     target_endian = "little",
+-    any(target_arch = "aarch64", target_arch = "x86_64")
++    any(target_arch = "mips", target_arch = "x86_64")
+ ))]
+ mod linux;
+ #[cfg(test)]
+@@ -124,23 +123,12 @@
+     if data.last() != Some(&0) {
+         return false;
+     }
+-    let mut found = false;
+-    for part in data.split(|b| *b == 0) {
+-        match part {
+-            b"airoha,an7583" | b"airoha,en7583" => return false,
+-            b"airoha,an7581" | b"airoha,en7581" => found = true,
+-            _ => (),
+-        }
+-    }
+-    found
++    data.split(|b| *b == 0).any(|part| part == b"mediatek,mt7621-soc")
+ }
+ 
+ fn supported_device() -> bool {
+-    #[cfg(all(target_os = "linux", target_arch = "aarch64", target_endian = "little"))]
++    #[cfg(all(target_os = "linux", target_arch = "mips", target_endian = "little"))]
+     {
+-        if std::arch::is_aarch64_feature_detected!("aes") {
+-            return false;
+-        }
+         for path in [
+             "/sys/firmware/devicetree/base/compatible",
+             "/proc/device-tree/compatible",
+@@ -156,18 +144,16 @@
+ fn open(backend: Backend, key: &[u8]) -> io::Result<Box<dyn Transport>> {
+     #[cfg(all(
+         target_os = "linux",
+-        target_pointer_width = "64",
+-        target_endian = "little",
+-        any(target_arch = "aarch64", target_arch = "x86_64")
++            target_endian = "little",
++        any(target_arch = "mips", target_arch = "x86_64")
+     ))]
+     {
+         linux::open(backend, key)
+     }
+     #[cfg(not(all(
+         target_os = "linux",
+-        target_pointer_width = "64",
+-        target_endian = "little",
+-        any(target_arch = "aarch64", target_arch = "x86_64")
++            target_endian = "little",
++        any(target_arch = "mips", target_arch = "x86_64")
+     )))]
+     {
+         let _ = (backend, key);
+@@ -175,16 +161,29 @@
+     }
+ }
+ 
++// The service supplies a private runtime pathname. This reports observed use,
++// never just the presence of a driver. A successful record is sticky per run.
++static STATUS_LOCK: Mutex<()> = Mutex::new(());
++fn report(state: &str) {
++    let Ok(_guard) = STATUS_LOCK.lock() else { return; };
++    if let Some(path) = std::env::var_os("QUARK_EIP93_STATUS_FILE") {
++        if state == "software" && matches!(std::fs::read_to_string(&path).as_deref(), Ok("active")) { return; }
++        let _ = std::fs::write(path, state);
++    }
++}
+ pub fn install() -> anyhow::Result<()> {
+     let backend = Backend::parse(&std::env::var("QUARK_EIP93").unwrap_or_default());
+-    if backend == Backend::Off || !supported_device() {
++    if option_env!("QUARK_EIP93_DISABLED") == Some("1") || backend == Backend::Off || !supported_device() {
++        report("off");
+         return Ok(());
+     }
++    // Padavan uses AF_ALG; no cryptodev module or architecture-specific ioctl.
++    let backend = if backend == Backend::Auto { Backend::Afalg } else { backend };
+     provider(Settings { backend, open })
+         .install_default()
+-        .map_err(|_| {
+-            anyhow::anyhow!("rustls provider was already installed before EIP93 initialization")
+-        })
++        .map_err(|_| anyhow::anyhow!("rustls provider was already installed before EIP93 initialization"))?;
++    report("pending");
++    Ok(())
+ }
+ 
+ fn common(c: &CipherSuiteCommon) -> CipherSuiteCommon {
+@@ -445,6 +444,7 @@
+ 
+ static DEV_NOTICE: Once = Once::new();
+ static AFALG_NOTICE: Once = Once::new();
++static AFALG_USED: Once = Once::new();
+ static FALLBACK_NOTICE: Once = Once::new();
+ static SOFTWARE_NOTICE: Once = Once::new();
+ struct State {
+@@ -501,6 +501,7 @@
+     fn disable(&mut self, e: &io::Error) {
+         self.transport = None;
+         self.disabled = true;
++        report("software");
+         self.key.zeroize();
+         SOFTWARE_NOTICE.call_once(
+             || tracing::warn!(error = %e, "Quark EIP93: backend unavailable; using ring software"),
+@@ -543,7 +544,10 @@
+                 &mut self.output,
+             );
+             match result {
+-                Ok(len) if len == expected => break len,
++                Ok(len) if len == expected => {
++                    AFALG_USED.call_once(|| report("active"));
++                    break len;
++                },
+                 Err(e) if decrypt && e.raw_os_error() == Some(libc::EBADMSG) => {
+                     wipe(&mut self.output);
+                     return Some(Err(e));
+--- a/src/eip93/linux.rs
++++ b/src/eip93/linux.rs
+@@ -1,6 +1,6 @@
+ // Copyright 2026 The PonWrt Authors.
+ // SPDX-License-Identifier: BSD-3-Clause
+-// Linux cryptodev 1.14 UAPI and AF_ALG AEAD transport, little-endian 64-bit ABI.
++// AF_ALG AEAD transport for MT7621 (MIPS o32) and host verification.
+ // Reference: xray-core patches 190/192, BSD-3-Clause, PonWrt Authors / coolsnowwolf.
+ use super::{Backend, MAX, TAG, Transport, output_len, wipe};
+ use std::{
+@@ -12,9 +12,9 @@
+ };
+ use zeroize::Zeroizing;
+ 
+-const SOL_ALG: i32 = 279;
++const SOL_ALG: i32 = libc::SOL_ALG;
+ const ALG: &str = "gcm_base(ctr(aes-eip93),ghash-generic)";
+-const LIMIT: usize = 128;
++const LIMIT: usize = 32;
+ static SESSIONS: AtomicUsize = AtomicUsize::new(0);
+ struct Lease(&'static AtomicUsize);
+ impl Lease {
+@@ -41,7 +41,7 @@
+         return Err(io::ErrorKind::InvalidInput.into());
+     }
+     match backend {
+-        Backend::Devcrypto => Ok(Box::new(Devcrypto::open(key)?)),
++        Backend::Devcrypto => Err(io::ErrorKind::Unsupported.into()),
+         Backend::Afalg => Ok(Box::new(Afalg::open(key, ALG)?)),
+         _ => Err(io::ErrorKind::InvalidInput.into()),
+     }
+@@ -57,194 +57,12 @@
+     // SAFETY: a successful syscall returns a newly owned file descriptor.
+     Ok(unsafe { OwnedFd::from_raw_fd(cvt(n)?) })
+ }
+-type Call = fn(&OwnedFd, libc::c_ulong, *mut libc::c_void) -> io::Result<()>;
+-fn ioctl(fd: &OwnedFd, request: libc::c_ulong, data: *mut libc::c_void) -> io::Result<()> {
+-    // SAFETY: requests below match the repr(C) UAPI structure passed by callers.
+-    // musl takes c_int; glibc takes c_ulong. Preserve the ioctl bit pattern.
+-    cvt(unsafe { libc::ioctl(fd.as_raw_fd(), request as _, data) }).map(|_| ())
+-}
+-
+-#[repr(C)]
+-#[derive(Default)]
+-struct SessionOp {
+-    cipher: u32,
+-    mac: u32,
+-    key_len: u32,
+-    key: *const u8,
+-    mac_key_len: u32,
+-    mac_key: *const u8,
+-    session: u32,
+-}
+-#[repr(C)]
+-struct AlgorithmInfo {
+-    name: [u8; 64],
+-    driver: [u8; 64],
+-}
+-#[repr(C)]
+-struct SessionInfo {
+-    session: u32,
+-    cipher: AlgorithmInfo,
+-    hash: AlgorithmInfo,
+-    align_mask: u16,
+-    flags: u32,
+-}
+-#[repr(C)]
+-#[derive(Default)]
+-struct AuthOp {
+-    session: u32,
+-    op: u16,
+-    flags: u16,
+-    len: u32,
+-    auth_len: u32,
+-    auth_src: *const u8,
+-    src: *const u8,
+-    dst: *mut u8,
+-    tag: *mut u8,
+-    tag_len: u32,
+-    iv: *const u8,
+-    iv_len: u32,
+-}
+-const GET_SESSION: libc::c_ulong = 0xc0306366;
+-const END_SESSION: libc::c_ulong = 0x40046367;
+-const GET_INFO: libc::c_ulong = 0xc10c636b;
+-const AUTH_CRYPT: libc::c_ulong = 0xc048636d;
+-const _: () = {
+-    assert!(size_of::<SessionOp>() == 48);
+-    assert!(size_of::<SessionInfo>() == 268);
+-    assert!(size_of::<AuthOp>() == 72);
+-};
+-
+-struct Aligned {
+-    bytes: Zeroizing<Vec<u8>>,
+-    start: usize,
+-    len: usize,
+-}
+-impl Aligned {
+-    fn new(len: usize, mask: u16) -> Self {
+-        let bytes = Zeroizing::new(vec![0; len + usize::from(mask)]);
+-        let start = (bytes.as_ptr() as usize).wrapping_neg() & usize::from(mask);
+-        Self { bytes, start, len }
+-    }
+-    fn data(&mut self) -> &mut [u8] {
+-        &mut self.bytes[self.start..self.start + self.len]
+-    }
+-    fn clear(&mut self, used: usize) {
+-        wipe(&mut self.data()[..used]);
+-    }
+-}
+-struct SessionFd {
+-    fd: OwnedFd,
+-    id: Option<u32>,
+-    call: Call,
+-}
+-impl SessionFd {
+-    fn request<T>(&self, request: libc::c_ulong, data: &mut T) -> io::Result<()> {
+-        (self.call)(&self.fd, request, (data as *mut T).cast())
+-    }
+-}
+-impl Drop for SessionFd {
+-    fn drop(&mut self) {
+-        if let Some(mut id) = self.id {
+-            let _ = self.request(END_SESSION, &mut id);
+-        }
+-    }
+-}
+-struct Devcrypto {
+-    session: SessionFd,
+-    buffer: Aligned,
+-    aad: Aligned,
+-    iv: Aligned,
+-    _lease: Lease,
+-}
+-fn driver_matches(info: &SessionInfo) -> bool {
+-    fn name(bytes: &[u8]) -> &[u8] {
+-        &bytes[..bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len())]
+-    }
+-    name(&info.cipher.name) == b"gcm(aes)" && name(&info.cipher.driver) == ALG.as_bytes()
+-}
+-impl Devcrypto {
+-    fn open(key: &[u8]) -> io::Result<Self> {
+-        Self::open_with(key, c"/dev/crypto", ioctl)
+-    }
+-    fn open_with(key: &[u8], path: &std::ffi::CStr, call: Call) -> io::Result<Self> {
+-        let lease = Lease::acquire()?;
+-        // SAFETY: static NUL-terminated pathname; no mode argument needed without O_CREAT.
+-        let fd = owned(unsafe { libc::open(path.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) })?;
+-        let mut session = SessionFd { fd, id: None, call };
+-        let mut op = SessionOp {
+-            cipher: 50,
+-            key_len: key.len() as u32,
+-            key: key.as_ptr(),
+-            ..Default::default()
+-        };
+-        session.request(GET_SESSION, &mut op)?;
+-        session.id = Some(op.session);
+-        // SAFETY: SessionInfo contains only integer/byte fields; all-zero is valid.
+-        let mut info: SessionInfo = unsafe { zeroed() };
+-        info.session = op.session;
+-        session.request(GET_INFO, &mut info)?;
+-        if !driver_matches(&info) {
+-            return Err(io::Error::other(
+-                "cryptodev did not select the EIP93 GCM driver",
+-            ));
+-        }
+-        let mask = info.align_mask;
+-        if u32::from(mask) & (u32::from(mask) + 1) != 0 {
+-            return Err(io::Error::other("invalid cryptodev alignmask"));
+-        }
+-        Ok(Self {
+-            session,
+-            buffer: Aligned::new(MAX + TAG, mask),
+-            aad: Aligned::new(256, mask),
+-            iv: Aligned::new(16, mask),
+-            _lease: lease,
+-        })
+-    }
+-}
+-impl Transport for Devcrypto {
+-    fn exchange_into(
+-        &mut self,
+-        nonce: &[u8; 12],
+-        src: &[u8],
+-        aad: &[u8],
+-        decrypt: bool,
+-        dst: &mut [u8],
+-    ) -> io::Result<usize> {
+-        let expected = output_len(src, aad, decrypt, dst)?;
+-        self.buffer.data()[..src.len()].copy_from_slice(src);
+-        self.aad.data()[..aad.len()].copy_from_slice(aad);
+-        self.iv.data()[..12].copy_from_slice(nonce);
+-        let mut req = AuthOp {
+-            session: self.session.id.unwrap(),
+-            op: u16::from(decrypt),
+-            len: src.len() as u32,
+-            auth_len: aad.len() as u32,
+-            auth_src: self.aad.data().as_ptr(),
+-            src: self.buffer.data().as_ptr(),
+-            dst: self.buffer.data().as_mut_ptr(),
+-            tag_len: TAG as u32,
+-            iv: self.iv.data().as_ptr(),
+-            iv_len: 12,
+-            ..Default::default()
+-        };
+-        let result = self.session.request(AUTH_CRYPT, &mut req).and_then(|_| {
+-            if req.len as usize != expected {
+-                return Err(io::Error::other("short cryptodev output"));
+-            }
+-            dst[..expected].copy_from_slice(&self.buffer.data()[..expected]);
+-            Ok(expected)
+-        });
+-        self.buffer.clear(src.len().max(expected));
+-        self.aad.clear(aad.len());
+-        self.iv.clear(12);
+-        result
+-    }
+-}
+ struct Afalg {
+     fd: OwnedFd,
+     input: Zeroizing<Vec<u8>>,
+     output: Zeroizing<Vec<u8>>,
+     control: [usize; 16],
++    legacy: bool,
+     _lease: Lease,
+ }
+ impl Afalg {
+@@ -308,6 +126,7 @@
+                 input: Zeroizing::new(vec![0; MAX + TAG + 256]),
+                 output: Zeroizing::new(vec![0; MAX + TAG + 256]),
+                 control: [0; 16],
++                legacy: legacy_kernel(&std::fs::read_to_string("/proc/sys/kernel/osrelease")?)?,
+                 _lease: lease,
+             })
+         }
+@@ -342,10 +161,12 @@
+         dst: &mut [u8],
+     ) -> io::Result<usize> {
+         let expected = output_len(src, aad, decrypt, dst)?;
+-        let input = &mut self.input[..aad.len() + src.len()];
++        let (input_len, output_len) = buffer_lengths(src.len(), aad.len(), expected, decrypt, self.legacy);
++        let input = &mut self.input[..input_len];
++        input.fill(0); // Linux 4.4 encryption includes zeroed tag capacity.
+         input[..aad.len()].copy_from_slice(aad);
+-        input[aad.len()..].copy_from_slice(src);
+-        let output = &mut self.output[..aad.len() + expected];
++        input[aad.len()..aad.len() + src.len()].copy_from_slice(src);
++        let output = &mut self.output[..output_len];
+         let result = (|| {
+             let control = &mut self.control;
+             let mut used = 0;
+@@ -385,7 +206,7 @@
+                     return Err(io::Error::other("short AF_ALG read"));
+                 }
+             }
+-            dst[..expected].copy_from_slice(&output[aad.len()..]);
++            dst[..expected].copy_from_slice(&output[aad.len()..aad.len() + expected]);
+             Ok(expected)
+         })();
+         wipe(input);
+@@ -405,168 +226,53 @@
+     )?))
+ }
+ 
++// This tree's Linux 4.4 AEAD interface includes tag space in both directions.
++fn legacy_kernel(release: &str) -> io::Result<bool> {
++    let mut parts = release.trim().split('.');
++    let major: u32 = parts.next().and_then(|s| s.parse().ok()).ok_or(io::ErrorKind::InvalidData)?;
++    let minor: u32 = parts.next().and_then(|s| s.parse().ok()).ok_or(io::ErrorKind::InvalidData)?;
++    Ok(major == 4 && minor == 4)
++}
++fn buffer_lengths(src: usize, aad: usize, expected: usize, decrypt: bool, legacy: bool) -> (usize, usize) {
++    let input = aad + src + if legacy && !decrypt { TAG } else { 0 };
++    (input, if legacy { input } else { aad + expected })
++}
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+     #[test]
+-    fn uapi_layout() {
+-        // Independent cryptodev 1.14 C UAPI sizes, offsets and _IO* request values.
+-        assert_eq!(std::mem::offset_of!(SessionOp, key), 16);
+-        assert_eq!(std::mem::offset_of!(SessionOp, session), 40);
+-        assert_eq!(std::mem::offset_of!(SessionInfo, align_mask), 260);
+-        assert_eq!(std::mem::offset_of!(SessionInfo, flags), 264);
+-        assert_eq!(std::mem::offset_of!(AuthOp, src), 24);
+-        assert_eq!(std::mem::offset_of!(AuthOp, iv), 56);
+-        assert_eq!(
+-            GET_SESSION,
+-            (3 << 30) | (48 << 16) | (b'c' as u64) << 8 | 102
+-        );
+-        assert_eq!(
+-            AUTH_CRYPT,
+-            (3 << 30) | (72 << 16) | (b'c' as u64) << 8 | 109
+-        );
+-        for mask in [0, 3, 15, 63, 4095, 65535] {
+-            let mut data = Aligned::new(MAX + TAG, mask);
+-            assert_eq!(data.data().as_ptr() as usize & usize::from(mask), 0);
++    fn linux44_and_modern_record_layout() {
++        for release in ["4.4.198", "4.4.302-padavan\n"] { assert!(legacy_kernel(release).unwrap()); }
++        for release in ["4.9.0", "5.4.0", "6.12.1"] { assert!(!legacy_kernel(release).unwrap()); }
++        for release in ["", "4", "a.4", "4.x"] { assert!(legacy_kernel(release).is_err()); }
++        assert_eq!(buffer_lengths(8192, 13, 8208, false, true), (8221, 8221));
++        assert_eq!(buffer_lengths(8208, 13, 8192, true, true), (8221, 8221));
++        assert_eq!(buffer_lengths(8192, 5, 8208, false, false), (8197, 8213));
++        assert_eq!(buffer_lengths(8208, 5, 8192, true, false), (8213, 8197));
++    }
++    #[test]
++    fn native_control_message_layout() {
++        let mut storage = [0usize; 16];
++        let mut used = 0;
++        for (kind, bytes) in [(3, vec![1, 0, 0, 0]), (2, vec![0; 16]), (4, vec![13, 0, 0, 0])] {
++            let start = used;
++            cmsg(&mut storage, &mut used, kind, &bytes);
++            unsafe {
++                let header = storage.as_ptr().cast::<u8>().add(start).cast::<libc::cmsghdr>();
++                assert_eq!((*header).cmsg_level, libc::SOL_ALG);
++                assert_eq!((*header).cmsg_type, kind);
++                assert_eq!((*header).cmsg_len as usize, libc::CMSG_LEN(bytes.len() as u32) as usize);
++                assert_eq!(std::slice::from_raw_parts(libc::CMSG_DATA(header), bytes.len()), bytes);
++            }
+         }
++        assert!(used <= std::mem::size_of_val(&storage));
+     }
+     #[test]
+-    fn driver_selection() {
+-        let mut info: SessionInfo = unsafe { zeroed() };
+-        info.cipher.name[..8].copy_from_slice(b"gcm(aes)");
+-        info.cipher.driver[..ALG.len()].copy_from_slice(ALG.as_bytes());
+-        assert!(driver_matches(&info));
+-        info.cipher.driver[0] ^= 1;
+-        assert!(!driver_matches(&info));
+-    }
+-    #[test]
+-    fn session_limit_and_cleanup() {
++    fn bounded_session_leases_release_on_drop() {
+         static COUNTER: AtomicUsize = AtomicUsize::new(0);
+-        let mut leases = Vec::new();
+-        while let Ok(lease) = Lease::acquire_from(&COUNTER) {
+-            leases.push(lease);
+-        }
+-        assert!(
+-            matches!(Lease::acquire_from(&COUNTER), Err(e) if e.raw_os_error() == Some(libc::EMFILE))
+-        );
++        let leases: Vec<_> = (0..LIMIT).map(|_| Lease::acquire_from(&COUNTER).unwrap()).collect();
++        assert!(Lease::acquire_from(&COUNTER).is_err());
+         drop(leases);
+         assert_eq!(COUNTER.load(Ordering::Relaxed), 0);
+-        assert!(Afalg::open(&[0; 16], "nonexistent-quark-eip93-test").is_err());
+-        // A failed production open also drops its lease via RAII.
+-    }
+-}
+-
+-#[cfg(test)]
+-mod devcrypto_tests {
+-    use super::*;
+-    use std::{cell::Cell, slice};
+-    thread_local! { static CLOSED: Cell<usize> = const { Cell::new(0) }; }
+-    fn model(_: &OwnedFd, request: libc::c_ulong, arg: *mut libc::c_void) -> io::Result<()> {
+-        // A cryptodev 1.14 UAPI model with an independent ring AES-GCM oracle.
+-        // It validates ioctl framing; it is not an EIP93 hardware test.
+-        unsafe {
+-            match request {
+-                GET_SESSION => {
+-                    let op = &mut *arg.cast::<SessionOp>();
+-                    assert_eq!(op.cipher, 50);
+-                    assert_eq!(op.mac, 0);
+-                    assert!(matches!(op.key_len, 16 | 32));
+-                    assert!(
+-                        slice::from_raw_parts(op.key, op.key_len as usize)
+-                            .iter()
+-                            .all(|b| *b == 7)
+-                    );
+-                    op.session = 41;
+-                }
+-                GET_INFO => {
+-                    let info = &mut *arg.cast::<SessionInfo>();
+-                    assert_eq!(info.session, 41);
+-                    info.cipher.name[..8].copy_from_slice(b"gcm(aes)");
+-                    info.cipher.driver[..ALG.len()].copy_from_slice(ALG.as_bytes());
+-                    info.align_mask = 15;
+-                }
+-                AUTH_CRYPT => {
+-                    let op = &mut *arg.cast::<AuthOp>();
+-                    assert_eq!(op.session, 41);
+-                    assert_eq!(op.flags, 0);
+-                    assert_eq!(op.src, op.dst);
+-                    assert!(op.tag.is_null());
+-                    assert_eq!(op.tag_len, 16);
+-                    assert_eq!(op.iv_len, 12);
+-                    assert_eq!(op.src as usize & 15, 0);
+-                    assert_eq!(op.iv as usize & 15, 0);
+-                    let nonce = &*op.iv.cast::<[u8; 12]>();
+-                    let src = slice::from_raw_parts(op.src, op.len as usize);
+-                    let aad = slice::from_raw_parts(op.auth_src, op.auth_len as usize);
+-                    let mut oracle = super::super::tests::software(&[7; 32]);
+-                    let out = oracle.exchange(nonce, src, aad, op.op == 1)?;
+-                    ptr::copy_nonoverlapping(out.as_ptr(), op.dst, out.len());
+-                    op.len = out.len() as u32;
+-                }
+-                END_SESSION => {
+-                    assert_eq!(*arg.cast::<u32>(), 41);
+-                    CLOSED.with(|n| n.set(n.get() + 1));
+-                }
+-                _ => return Err(io::Error::from_raw_os_error(libc::ENOTTY)),
+-            }
+-        }
+-        Ok(())
+-    }
+-    fn bad_driver(fd: &OwnedFd, req: libc::c_ulong, arg: *mut libc::c_void) -> io::Result<()> {
+-        model(fd, req, arg)?;
+-        if req == GET_INFO {
+-            unsafe {
+-                (*arg.cast::<SessionInfo>()).cipher.driver[0] = b'x';
+-            }
+-        }
+-        Ok(())
+-    }
+-    fn auth_error(fd: &OwnedFd, req: libc::c_ulong, arg: *mut libc::c_void) -> io::Result<()> {
+-        if req == AUTH_CRYPT {
+-            unsafe {
+-                *(*arg.cast::<AuthOp>()).dst = 0xee;
+-            }
+-            return Err(io::Error::from_raw_os_error(libc::EBADMSG));
+-        }
+-        model(fd, req, arg)
+-    }
+-    fn short_output(fd: &OwnedFd, req: libc::c_ulong, arg: *mut libc::c_void) -> io::Result<()> {
+-        model(fd, req, arg)?;
+-        if req == AUTH_CRYPT {
+-            unsafe {
+-                (*arg.cast::<AuthOp>()).len -= 1;
+-            }
+-        }
+-        Ok(())
+-    }
+-    #[test]
+-    fn cryptodev_marshalling_authentication_and_cleanup() {
+-        CLOSED.with(|n| n.set(0));
+-        let mut t = Devcrypto::open_with(&[7; 32], c"/dev/null", model).unwrap();
+-        super::super::selftest(&mut t, &[7; 32]).unwrap();
+-        let input = vec![29; 16384];
+-        let allocation = t.buffer.data().as_ptr();
+-        for n in [16384, 8192, MAX, 8193, 8192] {
+-            let input = vec![29; n];
+-            let encrypted = t.exchange(&[19; 12], &input, b"aad", false).unwrap();
+-            let plain = t.exchange(&[19; 12], &encrypted, b"aad", true).unwrap();
+-            assert_eq!(*plain, input);
+-            assert!(t.buffer.data().iter().all(|b| *b == 0));
+-            assert_eq!(t.buffer.data().as_ptr(), allocation);
+-            assert!(t.aad.data().iter().all(|b| *b == 0));
+-            assert!(t.iv.data().iter().all(|b| *b == 0));
+-        }
+-        drop(t);
+-        assert!(Devcrypto::open_with(&[7; 32], c"/dev/null", bad_driver).is_err());
+-        let mut t = Devcrypto::open_with(&[7; 32], c"/dev/null", auth_error).unwrap();
+-        let err = t.exchange(&[19; 12], &input, b"aad", true).unwrap_err();
+-        assert_eq!(err.raw_os_error(), Some(libc::EBADMSG));
+-        assert_eq!(input, vec![29; 16384]);
+-        assert!(t.buffer.data().iter().all(|b| *b == 0));
+-        drop(t);
+-        let mut t = Devcrypto::open_with(&[7; 32], c"/dev/null", short_output).unwrap();
+-        assert!(t.exchange(&[19; 12], &input, b"aad", false).is_err());
+-        drop(t);
+-        CLOSED.with(|n| assert_eq!(n.get(), 4));
+-    }
+-}
++    }
++}
+--- a/src/eip93/tests.rs
++++ b/src/eip93/tests.rs
+@@ -69,16 +69,16 @@
+ #[test]
+ fn device_and_policy_gates() {
+     for good in [
+-        b"airoha,an7581\0".as_slice(),
+-        b"nokia,xg-040g-md\0airoha,en7581\0",
++        b"mediatek,mt7621-soc\0".as_slice(),
++        b"xiaomi,redmi-router-ac2100\0mediatek,mt7621-soc\0",
+     ] {
+         assert!(compatible(good));
+     }
+     for bad in [
+         b"".as_slice(),
+-        b"airoha,an7581",
++        b"mediatek,mt7621-soc",
+         b"vendor,an7581\0",
+-        b"airoha,an75810\0",
++        b"mediatek,mt7621-soc-extra\0",
+         b"airoha,an7581\0airoha,an7583\0",
+         b"airoha,en7583\0",
+     ] {
+@@ -94,7 +94,7 @@
+     ] {
+         assert_eq!(Backend::parse(input), want);
+     }
+-    #[cfg(not(target_arch = "aarch64"))]
++    #[cfg(not(target_arch = "mips"))]
+     assert!(!supported_device());
+ }
+ 
+@@ -321,9 +321,8 @@
+ // binds/validates EIP93. No environment variable can enable this test override.
+ #[cfg(all(
+     target_os = "linux",
+-    target_pointer_width = "64",
+     target_endian = "little",
+-    any(target_arch = "aarch64", target_arch = "x86_64")
++    any(target_arch = "mips", target_arch = "x86_64")
+ ))]
+ fn generic_open(backend: Backend, key: &[u8]) -> io::Result<Box<dyn Transport>> {
+     Ok(Box::new(CountKernel(linux::open_generic(backend, key)?)))
+@@ -431,9 +430,8 @@
+ #[ignore = "requires Linux AF_ALG gcm_base(ctr(aes-generic),ghash-generic)"]
+ #[cfg(all(
+     target_os = "linux",
+-    target_pointer_width = "64",
+     target_endian = "little",
+-    any(target_arch = "aarch64", target_arch = "x86_64")
++    any(target_arch = "mips", target_arch = "x86_64")
+ ))]
+ fn kernel_afalg_tls_interoperability() {
+     // Fail instead of silently passing via software when the kernel path is unavailable.
+@@ -467,9 +465,9 @@
+ }
+ 
+ #[test]
+-#[ignore = "run on AN7581/EN7581 with working EIP93 and cryptodev/AF_ALG"]
++#[ignore = "run on MT7621 with working EIP93 and AF_ALG"]
+ fn hardware_tls_interoperability() {
+-    assert!(supported_device(), "requires AN7581 without CPU AES");
++    assert!(supported_device(), "requires MT7621");
+     let backend = Backend::parse(&std::env::var("QUARK_EIP93").unwrap_or_default());
+     assert!(
+         matches!(backend, Backend::Devcrypto | Backend::Afalg),

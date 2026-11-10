@@ -586,6 +586,10 @@ void stop_ddnsto(void);
 void start_ddnsto(void);
 void restart_ddnsto(void);
 #endif
+#if defined(APP_QUARKDRIVE)
+void stop_quarkdrive(void);
+void restart_quarkdrive(void);
+#endif
 #if defined(APP_ALDRIVER)
 void stop_aldriver(void);
 void start_aldriver(void);

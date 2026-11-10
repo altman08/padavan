@@ -97,6 +97,7 @@ typedef uint8_t u8;
 #define EVM_RESTART_ADBYBY		(1ULL << 51)
 #define EVM_RESTART_ALIDDNS		(1ULL << 52)
 #define EVM_RESTART_FRP		    (1ULL << 53)
+#define EVM_RESTART_QUARKDRIVE  (1ULL << 54)
 #define EVM_RESTART_SMARTDNS	(1ULL << 57)
 #define EVM_RESTART_ADGUARDHOME	(1ULL << 58)
 #define EVM_RESTART_ZEROTIER	(1ULL << 59)
@@ -105,9 +106,9 @@ typedef uint8_t u8;
 #define EVM_RESTART_WIREGUARD	(1ULL << 62)
 #define EVM_RESTART_SQM		    (1ULL << 63)
 
-#define EVM_RESTART_REBOOT		(1ULL << 64)
+#define EVM_RESTART_REBOOT		(1ULL << 55)
 
-#define EVM_BLOCK_UNSAFE		(1ULL << 65) /* special case */
+#define EVM_BLOCK_UNSAFE		(1ULL << 56) /* special case */
 
 
 #define EVT_RESTART_FIREWALL	1
@@ -166,6 +167,7 @@ typedef uint8_t u8;
 #define EVT_RESTART_ZEROTIER    2
 #define EVT_RESTART_DDNSTO     	2
 #define EVT_RESTART_ALDRIVER    2
+#define EVT_RESTART_QUARKDRIVE  2
 #define EVT_RESTART_WIREGUARD   2
 #define EVT_RESTART_SQM			2
 #define EVT_RESTART_ALIDDNS		2

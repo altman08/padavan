@@ -56,6 +56,7 @@
 #include "common.h"
 #include "nvram_x.h"
 #include "httpd.h"
+#include "quarkdrive.h"
 #include "dbapi.h"
 #define GROUP_FLAG_REFRESH 	0
 #define GROUP_FLAG_DELETE 	1
@@ -1182,6 +1183,15 @@ update_variables_ex(int eid, webs_t wp, int argc, char **argv)
 	action_mode = websGetVar(wp, "action_mode", "");
 	script = websGetVar(wp, "action_script", "");
 	sid_list = websGetVar(wp, "sid_list", "");
+#if defined(APP_QUARKDRIVE)
+	if (strstr(sid_list, "QUARKDRIVE;")) {
+		const char *error = quarkdrive_validate(wp);
+		if (error) {
+			websWrite(wp, "<script>parent.quarkdrive_apply_error(\"%s\");</script>\n", error);
+			return 0;
+		}
+	}
+#endif
 
 	while ((serviceId = svc_pop_list(sid_list, ';')) != NULL) {
 		sid = 0;
@@ -2561,6 +2571,11 @@ ej_firmware_caps_hook(int eid, webs_t wp, int argc, char **argv)
 #else
 	int found_app_ddnsto = 0;
 #endif
+#if defined(APP_QUARKDRIVE)
+	int found_app_quarkdrive = 1;
+#else
+	int found_app_quarkdrive = 0;
+#endif
 #if defined(APP_ALDRIVER)
 	int found_app_aldriver = 1;
 #else
@@ -2787,6 +2802,7 @@ ej_firmware_caps_hook(int eid, webs_t wp, int argc, char **argv)
 		"function found_app_zerotier() { return %d;}\n"
 		"function found_app_ddnsto() { return %d;}\n"
 		"function found_app_aldriver() { return %d;}\n"
+		"function found_app_quarkdrive() { return %d;}\n"
 		"function found_app_aliddns() { return %d;}\n"
 		"function found_app_frp() { return %d;}\n"
 		"function found_app_vpnsvr() { return %d;}\n"
@@ -2821,6 +2837,7 @@ ej_firmware_caps_hook(int eid, webs_t wp, int argc, char **argv)
 		found_app_zerotier,
 		found_app_ddnsto,
 		found_app_aldriver,
+		found_app_quarkdrive,
 		found_app_aliddns,
 		found_app_frp,
 		found_app_vpnsvr,
@@ -3547,6 +3564,12 @@ apply_cgi(const char *url, webs_t wp)
 		websRedirect(wp, current_url);
 		return 0;
 	}
+#if defined(APP_QUARKDRIVE)
+	else if (!strcmp(value, " QuarkDrive ")) {
+		quarkdrive_control(wp);
+		return 0;
+	}
+#endif
 	else if (!strcmp(value, " ClearssrplusLog "))
 	{
 		// current only ssrpluslog implement this button
@@ -3655,6 +3678,12 @@ apply_cgi(const char *url, webs_t wp)
 		int sid;
 		
 		sid_list = websGetVar(wp, "sid_list", "");
+#if defined(APP_QUARKDRIVE)
+		if (strstr(sid_list, "QUARKDRIVE;") && quarkdrive_validate(wp)) {
+			websError(wp, 400, "Invalid QuarkDrive settings");
+			return 0;
+		}
+#endif
 		while ((serviceId = svc_pop_list(sid_list, ';')) != NULL) {
 			sid = 0;
 			while (GetServiceId(sid) != NULL) {
@@ -4567,6 +4596,10 @@ struct ej_handler ej_handlers[] =
 #endif
 #if defined (APP_DDNSTO)
 	{ "ddnsto_status", ddnsto_status_hook},
+#endif
+#if defined(APP_QUARKDRIVE)
+	{ "quarkdrive_status", quarkdrive_status_hook},
+	{ "quarkdrive_log", quarkdrive_log_hook},
 #endif
 #if defined (APP_ALDRIVER)
 	{ "aliyundrive_status", aliyundrive_status_hook},

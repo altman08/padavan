@@ -181,6 +181,9 @@ endif
 ifneq ($(CONFIG_FIRMWARE_INCLUDE_WIREGUARD),y)
 	rm -f $(INSTALLDIR)/www/Advanced_wireguard.asp
 endif
+ifneq ($(CONFIG_FIRMWARE_INCLUDE_QUARKDRIVE),y)
+	rm -f $(INSTALLDIR)/www/Advanced_quarkdrive.asp $(INSTALLDIR)/www/quarkdrive_status.asp $(INSTALLDIR)/www/quarkdrive_log.asp
+endif
 ifneq ($(CONFIG_FIRMWARE_INCLUDE_ALDRIVER),y)
 	rm -f $(INSTALLDIR)/www/Advanced_aliyundrive.asp
 endif

@@ -1,9 +1,6 @@
 name: Build Firmware
 
 on:
-  push:
-    branches:
-      - "*"
   workflow_dispatch:
 
 jobs:
@@ -41,6 +38,11 @@ jobs:
             bison flex gperf help2man libtool-bin texinfo python3-docutils autopoint gettext ccache \
             autoconf automake liblzma-dev libltdl-dev liblzo2-dev
           echo "BUILD_DATE=$(TZ='Asia/Shanghai' date +%Y%m%d)" >> $GITHUB_ENV
+
+      - name: Enable QuarkDrive and Install Rust
+        run: |
+          echo "CONFIG_FIRMWARE_INCLUDE_QUARKDRIVE=y" >> "trunk/configs/templates/${{ matrix.target }}.config"
+          rustup toolchain install 1.94.0 --profile minimal --component rust-src
 
       - name: Build Firmware
         run: |

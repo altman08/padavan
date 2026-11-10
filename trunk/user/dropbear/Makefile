@@ -1,17 +1,18 @@
 include $(ROOTDIR)/rules.mk
 
 PKG_NAME:=dropbear
-PKG_VERSION:=2025.87
+PKG_VERSION:=2026.94
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
 PKG_SOURCE_URL:= \
 	https://matt.ucc.asn.au/dropbear/releases/ \
 	https://dropbear.nl/mirror/releases/
-PKG_HASH:=738b7f358547f0c64c3e1a56bbc5ef98d34d9ec6adf9ccdf01dc0bf2caa2bc8d
-
-PKG_FIXUP:=autoreconf
+PKG_HASH:=e098034a843699200c8c977a991fff73159735bf795d5f72ef672c41a6b1ae81
 
 include $(INCLUDE_DIR)/package.mk
+
+# Allow inetd-style connections via dropbear -i.
+TARGET_CFLAGS += -DINETD_MODE=1
 
 ifeq ($(CONFIG_FIRMWARE_INCLUDE_SFTP),y)
 TARGET_CFLAGS += -DSFTPSERVER_PATH=\\\"/usr/libexec/sftp-server\\\"
